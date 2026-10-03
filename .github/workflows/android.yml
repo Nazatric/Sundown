@@ -150,13 +150,27 @@ jobs:
           SUNDOWN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           SUNDOWN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          gradle --no-daemon --stacktrace :app:assembleRelease
+          set +e
+          gradle --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee /tmp/sundown-release-build.log
+          build_exit=${PIPESTATUS[0]}
+          if [[ "$build_exit" -ne 0 ]]; then
+            summary="$(tail -n 24 /tmp/sundown-release-build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Release APK assembly failed::$summary"
+            exit "$build_exit"
+          fi
 
       - name: Assemble unsigned release variant for validation when signing is unavailable
         if: ${{ steps.release_signing.outputs.configured != 'true' }}
         working-directory: android
         run: |
-          gradle --no-daemon --stacktrace :app:assembleRelease
+          set +e
+          gradle --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee /tmp/sundown-release-build.log
+          build_exit=${PIPESTATUS[0]}
+          if [[ "$build_exit" -ne 0 ]]; then
+            summary="$(tail -n 24 /tmp/sundown-release-build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Release APK assembly failed::$summary"
+            exit "$build_exit"
+          fi
 
       - name: Verify universal release APK and signing state
         shell: bash
