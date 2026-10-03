@@ -1,15 +1,15 @@
 # Native audit and verification status
 
-Audit date: 2026-10-04. This document separates source inspection, CI builds, UI evidence, runtime/device validation and release artifacts. A green CI build is not visual, device, performance or signing proof.
+Audit date: 2026-10-04. This report separates source inspection, CI build/test evidence, screenshot comparison, device validation, performance profiling and release signing. A green CI run is not visual, device, performance, notification-runtime or signing proof.
 
 ## Required audit matrix
 
 | Category | Status | Evidence / limitation |
 |---|---|---|
-| Native Android architecture and offline-only boundary | PASS (source) | Kotlin/Compose, Rust/UniFFI, Room, SAF/MediaStore and Media3 are native integrations. The manifest has no `INTERNET` permission; no web runtime/WebView or native iOS project is present. |
+| Native Android architecture and offline-only boundary | PASS (source) | Kotlin/Compose, Rust/UniFFI, Room, SAF/MediaStore and Media3 are native integrations. The Android manifest has no `INTERNET` permission; no web runtime/WebView or native iOS project is present. |
 | Reference visual fidelity | UNVERIFIED | No reference screenshots, recordings or raster design assets are present in the checkout. `android/docs/PIXEL_SPEC.md` is a measurable target, not a screenshot-validated result. The requested sleeve sheen and compact tab adjustment are source-level implementations only; no pixel-parity claim is made. |
 | Custom controls, mini-player proportions, fullscreen/insets and responsive UI | UNVERIFIED (runtime) | Existing custom Compose controls and layout dimensions were audited; compact segmented-control padding was adjusted without shrinking the whole toolbar. There is no emulator/device screenshot or interaction recording to confirm geometry or touch behavior. |
-| A–Z taps, drag scrubbing, jump targets and current-letter state | PASS (source) / UNVERIFIED (device) | The rail now maps drag positions to letters, scrolls directly while dragging, animates taps, highlights the first visible letter, and avoids drag-time no-match notices. Pure key-mapping unit tests were added; device gesture behavior is not yet checked. |
+| A–Z taps, drag scrubbing, jump targets and current-letter state | PASS (source + unit tests) / UNVERIFIED (device) | The rail maps drag positions to letters, scrolls directly while dragging, animates taps, highlights the first visible letter, and avoids drag-time no-match notices. The pure key-mapping tests pass in the Android unit-test task; device gesture behavior is not checked. |
 | Sources close, sheets, modal/back and predictive-back priority | PASS (source structure) / UNVERIFIED (device) | The Sources toolbar remains outside its scrollable content; navigation destinations and explicit filter/dialog back handlers are present. System back, predictive-back and repeated close taps need device validation. |
 | First-launch local-audio permission and indexing | PASS (source) / UNVERIFIED (device) | A one-time startup request uses `READ_MEDIA_AUDIO` on API 33+ and `READ_EXTERNAL_STORAGE` on API 26–32. Actual permission is re-read from Android on resume and before scans; a granted request queues a MediaStore scan after any active scan. Denial leaves a truthful state and SAF remains available. Runtime grant/deny/revoke flows are not device-tested. No image/video permission is requested. |
 | Media3 session, notification and lock-screen controls | PASS (source) / UNVERIFIED (device) | `MediaSessionService`, ExoPlayer, media-playback foreground-service declarations, session activity and metadata artwork are present. Android's media-session notification exemption is used; no unnecessary `POST_NOTIFICATIONS` or Notification Listener permission is added. Actual notification/lock-screen behavior is unverified. |
@@ -17,9 +17,10 @@ Audit date: 2026-10-04. This document separates source inspection, CI builds, UI
 | Library scanning, Room, metadata and search | PASS (source) / UNVERIFIED (device) | Incremental fingerprints, bounded parse workers, batched Room writes/deletes, migration, off-main-thread indexing and optional FTS5 with a Kotlin fallback were reviewed. Android SQLite support, provider behavior and large-library performance are not verified here. |
 | Artwork identity, resize, preload and cache bounds | PASS (source) / UNVERIFIED (device) | Artwork IDs are content-derived; Rust creates at-most-1024 px and 160 px previews; memory LRU and 128 MiB disk bounds, preload, a two-decode concurrency limit and a short placeholder crossfade are present. Visual quality, memory pressure and eviction/rebuild behavior need device profiling. |
 | High-refresh/frame pacing | UNVERIFIED | No 90/120 Hz smoothness claim is made. `preferredRefreshRate` remains 0 and no unsupported mode is hardcoded; no frame profiler or high-refresh device is available. |
-| Android/Rust compile and unit tests for this revision | UNVERIFIED (CI pending) | The previous implementation revision passed Rust tests, Android unit tests and debug assembly in CI, but that does not validate these new changes. Local JDK, Gradle, Android SDK/NDK, Rust/Cargo/cargo-ndk, Kotlin compiler and adb are unavailable. |
-| Universal release variant and ABI composition | UNVERIFIED (CI pending) | CI is being extended to assemble the release variant without signing when secrets are absent and verify the three Rust ABIs. An unsigned APK is not the requested signed deliverable. |
-| Signed universal release APK | BLOCKED | No signed artifact is currently verified. The prior CI run skipped release signing when signing inputs were unavailable; the new workflow will identify missing Actions secret names, assemble/verify the release variant unsigned, and upload a release artifact only after signature verification passes. |
+| Rust tests, Android unit tests, debug build and release-variant assembly | PASS (CI) | GitHub Actions run [37155651755](https://github.com/Nazatric/Sundown/actions/runs/37155651755), commit `a33313b8cfac3f3a850360c85a3b71af3abc4ad5`: Rust unit tests, Android unit tests, debug APK assembly, unsigned release-variant assembly and the universal native-ABI check all passed. The APK/ABI checks ran in CI; no local toolchain is installed. |
+| Android workflow syntax/execution | PASS (CI) | The updated `.github/workflows/android.yml` was parsed and executed by the successful Actions run above: secret detection and unsigned-validation ran; the signed-build/upload path was correctly skipped because inputs are missing. |
+| Universal release variant and ABI composition | PASS (unsigned CI validation only) | The release APK assembled and its ZIP contains `lib/arm64-v8a/libsundown_core.so`, `lib/armeabi-v7a/libsundown_core.so` and `lib/x86_64/libsundown_core.so`. The unsigned release APK is validation evidence only and was not uploaded or presented as a deliverable. |
+| Signed universal release APK | BLOCKED | No signed release APK was built or uploaded. CI reported missing GitHub Actions secrets: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS` and `KEY_PASSWORD`. Configure those secrets before requesting a signed universal APK; debug and unsigned APKs are not substitutes. |
 | iOS / IPA | BLOCKED / NOT APPLICABLE | There is no native iOS implementation or project, so no IPA is produced or claimed. |
 
 ## Static checks completed in this audit
@@ -32,9 +33,8 @@ Audit date: 2026-10-04. This document separates source inspection, CI builds, UI
 
 ## Evidence still required
 
-1. Complete the GitHub Actions run for the current commit; record Rust/Android test outcomes, release-variant/ABI verification, and exact missing signing-secret names.
-2. On API 32 and API 33+ devices, test permission grant/deny/revoke, MediaStore indexing after grant, SAF access, and the Sources retry action.
-3. Exercise MediaSession notifications, lock-screen controls, queue restoration, empty-queue persistence, back/predictive-back, X close, rotation and insets.
-4. Compare reference screenshots at the documented viewport. The current checkout contains no screenshots or recordings to compare against.
-5. Profile a large library and high-refresh device before making frame-pacing, memory or 90/120 Hz smoothness claims.
-6. Build, sign, verify and upload the universal release APK only when valid signing inputs are configured. If absent, report the exact missing Actions secrets and do not relabel an unsigned or debug APK as signed.
+1. On API 32 and API 33+ devices, test permission grant/deny/revoke, MediaStore indexing after grant, SAF access, and the Sources retry action.
+2. Exercise MediaSession notifications, lock-screen controls, queue restoration, empty-queue persistence, back/predictive-back, X close, rotation and insets.
+3. Compare reference screenshots at the documented viewport. The current checkout contains no screenshots or recordings to compare against.
+4. Profile a large library and high-refresh device before making frame-pacing, memory or 90/120 Hz smoothness claims.
+5. Build, sign, verify and upload the universal release APK only when valid signing inputs are configured. The current CI run validated the unsigned release variant and ABI contents only; signing is blocked by the four missing Actions secrets listed above.
