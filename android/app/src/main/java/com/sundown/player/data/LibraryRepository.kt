@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import com.sundown.player.data.db.FingerprintRow
 import com.sundown.player.data.db.PlaylistEntity
 import com.sundown.player.data.db.SundownDatabase
 import com.sundown.player.data.db.TrackEntity
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 data class ScanProgress(
     val phase: String,
@@ -53,6 +55,7 @@ class LibraryRepository(
     val tracks: Flow<List<TrackEntity>> = dao.observeTracks()
 
     val mediaStorePermissionGranted: Boolean get() = MediaStoreSource.hasReadPermission(context)
+    val mediaStoreChanges = mediaStore.changes()
     val playlists: Flow<List<PlaylistEntity>> = dao.observePlaylists()
 
     private val _progress = MutableStateFlow<ScanProgress?>(null)
@@ -64,7 +67,7 @@ class LibraryRepository(
     fun hasFolderAccess(treeUri: String?): Boolean =
         treeUri != null && runCatching { saf.hasAccess(Uri.parse(treeUri)) }.getOrDefault(false)
 
-    suspend fun connectFolder(treeUri: Uri) {
+    suspend fun connectFolder(treeUri: Uri) = withContext(Dispatchers.IO) {
         val previous = prefs.flow.first()
         try {
             // Persist first; never replace the working source with an ephemeral
@@ -83,15 +86,16 @@ class LibraryRepository(
         }
     }
 
-    suspend fun disconnectFolder(treeUri: String?) {
+    suspend fun disconnectFolder(treeUri: String?) = withContext(Dispatchers.IO) {
         if (!scanLock.tryLock()) {
             _messages.send("A scan is in progress. Try disconnecting the folder again when it finishes.")
-            return
+            return@withContext
         }
         try {
             treeUri?.let { saf.release(Uri.parse(it)) }
             dao.deleteSource(SOURCE_FOLDER)
             prefs.update { it.copy(treeUri = null, treeName = null) }
+            pruneArtworkSafely()
             _messages.send("Folder disconnected. Individually added files and playlists were kept.")
         } finally {
             scanLock.unlock()
@@ -102,8 +106,8 @@ class LibraryRepository(
      * A scan only prunes absent rows after the provider walk and every changed
      * file read succeeded. Partial provider listings can never become deletes.
      */
-    suspend fun rescan(treeUri: Uri): Boolean {
-        if (!scanLock.tryLock()) return false
+    suspend fun rescan(treeUri: Uri): Boolean = withContext(Dispatchers.IO) {
+        if (!scanLock.tryLock()) return@withContext false
         var completed = false
         try {
             _progress.value = ScanProgress("reading", 0, 0, saf.displayName(treeUri))
@@ -112,20 +116,15 @@ class LibraryRepository(
             }
 
             val known = dao.fingerprints(SOURCE_FOLDER).associateBy { it.id }
-            val toParse = found.filter { file ->
-                val previous = known[file.id]
-                previous == null ||
-                    previous.size != file.size ||
-                    previous.mtime != file.mtime ||
-                    (previous.artId != null && !artwork.has(previous.artId))
-            }
+            val toParse = found.filter { file -> requiresParse(file, known[file.id]) }
             val parseResult = parseAll(toParse)
             val seen = found.mapTo(HashSet()) { it.id }
             val removed = known.keys.filter { it !in seen }
 
             if (parseResult.failed == 0) {
-                if (removed.isNotEmpty()) dao.deleteIds(removed)
+                deleteIds(removed)
                 completed = true
+                pruneArtworkSafely()
             }
 
             _progress.value = ScanProgress("done", toParse.size, toParse.size, "")
@@ -146,12 +145,12 @@ class LibraryRepository(
             _progress.value = null
             scanLock.unlock()
         }
-        return completed
+        completed
     }
 
     /** Incrementally indexes the real Android music library without touching user files. */
-    suspend fun rescanMediaStore(): Boolean {
-        if (!scanLock.tryLock()) return false
+    suspend fun rescanMediaStore(waitForScan: Boolean = false, notify: Boolean = true): Boolean = withContext(Dispatchers.IO) {
+        if (waitForScan) scanLock.lock() else if (!scanLock.tryLock()) return@withContext false
         var completed = false
         try {
             _progress.value = ScanProgress("reading", 0, 0, "Device Music")
@@ -168,47 +167,47 @@ class LibraryRepository(
                 )
             }
             val known = dao.fingerprints(SOURCE_MEDIA).associateBy { it.id }
-            val toParse = found.filter { file ->
-                val previous = known[file.id]
-                previous == null || previous.size != file.size || previous.mtime != file.mtime ||
-                    (previous.artId != null && !artwork.has(previous.artId))
-            }
+            val toParse = found.filter { file -> requiresParse(file, known[file.id]) }
             val result = parseAll(toParse, source = SOURCE_MEDIA)
             val seen = found.mapTo(HashSet()) { it.id }
             val removed = known.keys.filter { it !in seen }
             if (result.failed == 0) {
-                if (removed.isNotEmpty()) dao.deleteIds(removed)
+                deleteIds(removed)
                 completed = true
+                pruneArtworkSafely()
             }
-            _messages.send(
-                if (result.failed > 0) {
-                    "Could not read ${result.failed} device songs; existing entries were kept."
-                } else if (toParse.isEmpty() && removed.isEmpty()) {
-                    "Device music is up to date with ${found.size} songs."
-                } else {
-                    "Device music updated: ${found.size} songs, ${result.parsed} new or changed, ${removed.size} removed."
-                },
-            )
+            if (notify) {
+                _messages.send(
+                    if (result.failed > 0) {
+                        "Could not read ${result.failed} device songs; existing entries were kept."
+                    } else if (toParse.isEmpty() && removed.isEmpty()) {
+                        "Device music is up to date with ${found.size} songs."
+                    } else {
+                        "Device music updated: ${found.size} songs, ${result.parsed} new or changed, ${removed.size} removed."
+                    },
+                )
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            _messages.send(error.message ?: "The device music library could not be scanned.")
+            if (notify) _messages.send(error.message ?: "The device music library could not be scanned.")
+            else Log.w(TAG, "Background MediaStore scan failed.", error)
         } finally {
             _progress.value = null
             scanLock.unlock()
         }
-        return completed
+        completed
     }
 
     /** Individually selected `ACTION_OPEN_DOCUMENT` files retain their URI grant. */
-    suspend fun ingestFiles(uris: List<Uri>) {
+    suspend fun ingestFiles(uris: List<Uri>) = withContext(Dispatchers.IO) {
         if (uris.isEmpty()) {
             _messages.send("No audio files were selected.")
-            return
+            return@withContext
         }
-        if (!scanLock.tryLock()) return
+        if (!scanLock.tryLock()) return@withContext
         try {
-            val found = uris.mapNotNull { uri ->
+            val found = uris.distinct().mapNotNull { uri ->
                 val name = queryName(uri) ?: return@mapNotNull null
                 if (!SafSource.isAudio(name, context.contentResolver.getType(uri).orEmpty())) return@mapNotNull null
                 SafSource.Found(
@@ -219,11 +218,15 @@ class LibraryRepository(
                     size = queryLong(uri, OpenableColumns.SIZE),
                     mtime = 0,
                 )
-            }
-            val result = parseAll(found, source = SOURCE_FILE)
+            }.distinctBy(SafSource.Found::id)
+            val known = dao.fingerprints(SOURCE_FILE).associateBy { it.id }
+            val toParse = found.filter { file -> requiresParse(file, known[file.id]) }
+            val result = parseAll(toParse, source = SOURCE_FILE)
+            if (result.failed == 0) pruneArtworkSafely()
             when {
                 found.isEmpty() -> _messages.send("No supported audio files were selected.")
                 result.failed > 0 -> _messages.send("${result.parsed} songs added; ${result.failed} files could not be read.")
+                toParse.isEmpty() -> _messages.send("The selected songs are already in your library.")
                 else -> _messages.send("${result.parsed} ${if (result.parsed == 1) "song" else "songs"} added.")
             }
         } catch (cancelled: CancellationException) {
@@ -236,7 +239,29 @@ class LibraryRepository(
         }
     }
 
+    private fun requiresParse(file: SafSource.Found, previous: FingerprintRow?): Boolean =
+        previous == null ||
+            previous.docUri != file.docUri ||
+            previous.path != file.path ||
+            previous.size != file.size ||
+            previous.mtime != file.mtime ||
+            (previous.artId?.let { !it.startsWith(ARTWORK_ID_PREFIX) || artwork.needsRebuild(it) } == true)
+
     private data class ParseResult(val parsed: Int, val failed: Int)
+
+    private suspend fun pruneArtworkSafely() {
+        try {
+            artwork.prune(dao.referencedArtworkIds().toSet())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not prune cached artwork.", error)
+        }
+    }
+
+    private suspend fun deleteIds(ids: List<String>) {
+        ids.chunked(DELETE_BATCH).forEach { dao.deleteIds(it) }
+    }
 
     /** Bounded worker pool; Room is flushed in batches as parsing completes. */
     private suspend fun parseAll(files: List<SafSource.Found>, source: String = SOURCE_FOLDER): ParseResult = coroutineScope {
@@ -293,15 +318,21 @@ class LibraryRepository(
         val artist = tags.artist.ifBlank { "Unknown Artist" }
         val album = tags.album.ifBlank { "Unknown Album" }
         val albumKey = SundownCore.albumKey(tags.albumArtist, artist, album)
-        val candidate = "art_${SundownCore.blake3Key(albumKey).take(32)}"
         val picture = tags.picture
-        val artId = when {
-            artwork.has(candidate) -> candidate
-            picture != null -> {
-                val previews = artworkDecode.withPermit { SundownCore.makeArtPreviews(picture) }
-                if (previews != null && (artwork.write(candidate, previews.large, previews.small) || artwork.has(candidate))) candidate else null
+        val artId = picture?.let { bytes ->
+            // Key by the actual embedded cover, not album text: corrected or
+            // replaced art must never reuse a stale preview for that album.
+            val candidate = "$ARTWORK_ID_PREFIX${SundownCore.artworkKey(bytes)}"
+            if (artwork.has(candidate)) {
+                candidate
+            } else {
+                val previews = artworkDecode.withPermit { SundownCore.makeArtPreviews(bytes) }
+                if (previews != null && (artwork.write(candidate, previews.large, previews.small) || artwork.has(candidate))) {
+                    candidate
+                } else {
+                    null
+                }
             }
-            else -> null
         }
 
         return TrackEntity(
@@ -346,10 +377,10 @@ class LibraryRepository(
     suspend fun savePlaylist(playlist: PlaylistEntity) = dao.upsertPlaylist(playlist)
     suspend fun deletePlaylist(id: String) = dao.deletePlaylist(id)
 
-    suspend fun clearArtwork() {
+    suspend fun clearArtwork() = withContext(Dispatchers.IO) {
         if (!scanLock.tryLock()) {
             _messages.send("A scan is in progress. Try clearing artwork again when it finishes.")
-            return
+            return@withContext
         }
         try {
             artwork.clear()
@@ -361,10 +392,10 @@ class LibraryRepository(
         }
     }
 
-    suspend fun eraseEverything(currentTree: String?) {
+    suspend fun eraseEverything(currentTree: String?) = withContext(Dispatchers.IO) {
         if (!scanLock.tryLock()) {
             _messages.send("A scan is in progress. Try erasing library data again when it finishes.")
-            return
+            return@withContext
         }
         try {
             currentTree?.let { saf.release(Uri.parse(it)) }
@@ -394,6 +425,8 @@ class LibraryRepository(
         private const val HEAD_BYTES = 1 shl 21
         private const val TAIL_BYTES = 1 shl 18
         private const val BATCH = 24
+        private const val DELETE_BATCH = 400
+        private const val ARTWORK_ID_PREFIX = "artb_"
         private const val TAG = "SundownLibrary"
     }
 }

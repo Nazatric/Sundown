@@ -59,12 +59,20 @@ class PlayerController(
     private var queue: List<TrackEntity> = emptyList()
     private var queueById: Map<String, TrackEntity> = emptyMap()
     private var queueIds: List<String> = emptyList()
+    private var queueRestorationPending = false
+    private val pendingQueueMutations = mutableListOf<QueueMutation>()
+    val isQueueRestorationPending: Boolean get() = queueRestorationPending
     private var lastVolume = 0.8f
     private var progressJob: Job? = null
     private var artworkJob: Job? = null
     private var pendingArtworkTrack: String? = null
     private var lastReportedDuration: Pair<String, Int>? = null
     private var pendingPlay: (() -> Unit)? = null
+
+    private sealed interface QueueMutation {
+        data class Append(val tracks: List<TrackEntity>) : QueueMutation
+        object Clear : QueueMutation
+    }
 
     private val _state = MutableStateFlow(PlayerSnapshot())
     val state: StateFlow<PlayerSnapshot> = _state.asStateFlow()
@@ -142,8 +150,41 @@ class PlayerController(
         }
     }
 
+    /** Hold queue edits until the persisted queue has been reconciled with the live session. */
+    fun beginQueueRestoration() {
+        queueRestorationPending = true
+    }
+
+    /** Applies queue edits made while restoration was in flight, in their original order. */
+    fun finishQueueRestoration(): Boolean {
+        if (!queueRestorationPending) return false
+        val activePlayer = controller ?: return false
+        queueRestorationPending = false
+        if (pendingQueueMutations.isEmpty()) return false
+
+        var changed = false
+        pendingQueueMutations.forEach { mutation ->
+            when (mutation) {
+                is QueueMutation.Append -> if (mutation.tracks.isNotEmpty()) {
+                    activePlayer.addMediaItems(mutation.tracks.map(::toMediaItem))
+                    updateQueue(queue + mutation.tracks)
+                    changed = true
+                }
+                QueueMutation.Clear -> {
+                    clearQueueNow(activePlayer)
+                    changed = true
+                }
+            }
+        }
+        pendingQueueMutations.clear()
+        if (changed) publish()
+        return changed
+    }
+
     fun play(tracks: List<TrackEntity>, startIndex: Int, autoplay: Boolean = true) {
         if (tracks.isEmpty()) return
+        // Starting a new selection replaces any queue edits made before restoration.
+        if (queueRestorationPending) pendingQueueMutations.clear()
         val activePlayer = controller
         if (activePlayer == null) {
             val deferredTracks = tracks.toList()
@@ -207,43 +248,57 @@ class PlayerController(
     fun queueTracks(): List<TrackEntity> = queue
 
     /** Jump to a queued item without rebuilding the queue. */
-    fun jumpTo(trackId: String) {
-        val activePlayer = controller ?: return
+    fun jumpTo(trackId: String): Boolean {
+        val activePlayer = controller ?: return false
         val index = queue.indexOfFirst { it.id == trackId }
-        if (index < 0) return
+        if (index < 0) return false
         activePlayer.seekTo(index, 0L)
         activePlayer.play()
+        return true
     }
 
-    fun removeFromQueue(trackId: String) {
-        val activePlayer = controller ?: return
+    fun removeFromQueue(trackId: String): Boolean {
+        val activePlayer = controller ?: return false
         val index = queue.indexOfFirst { it.id == trackId }
-        if (index < 0) return
+        if (index < 0) return false
         activePlayer.removeMediaItem(index)
         queue = queue.filterIndexed { i, _ -> i != index }
         queueById = queue.associateBy(TrackEntity::id)
         queueIds = queue.map(TrackEntity::id)
         publish()
+        return true
     }
 
     /** Append without disturbing the current item. */
-    fun enqueue(tracks: List<TrackEntity>) {
-        val activePlayer = controller ?: return
-        if (tracks.isEmpty()) return
+    fun enqueue(tracks: List<TrackEntity>): Boolean {
+        if (tracks.isEmpty()) return false
+        if (queueRestorationPending) {
+            pendingQueueMutations += QueueMutation.Append(tracks.toList())
+            return true
+        }
+        val activePlayer = controller ?: return false
         activePlayer.addMediaItems(tracks.map(::toMediaItem))
         updateQueue(queue + tracks)
         publish()
+        return true
     }
 
     fun clearQueue() {
-        cancelArtworkLoad()
-        controller?.apply {
-            pause()
-            clearMediaItems()
-            playWhenReady = false
+        if (queueRestorationPending) {
+            pendingQueueMutations += QueueMutation.Clear
+            return
         }
+        controller?.let(::clearQueueNow)
         updateQueue(emptyList())
         publish()
+    }
+
+    private fun clearQueueNow(activePlayer: MediaController) {
+        cancelArtworkLoad()
+        activePlayer.pause()
+        activePlayer.clearMediaItems()
+        activePlayer.playWhenReady = false
+        updateQueue(emptyList())
     }
 
     fun toggle() {
@@ -253,7 +308,7 @@ class PlayerController(
 
     fun next() { controller?.seekToNextMediaItem() }
 
-    /** Matches the web rule: restart the track if more than 3 seconds elapsed. */
+    /** Restart the current track when it is more than 3 seconds into playback. */
     fun previous() {
         val activePlayer = controller ?: return
         if (activePlayer.currentPosition > 3_000L) activePlayer.seekTo(0L)

@@ -17,6 +17,7 @@ import com.sundown.player.playback.PlayerController
 import com.sundown.player.playback.PlayerSnapshot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -81,6 +82,7 @@ data class LibraryUiState(
         }
 }
 
+@OptIn(FlowPreview::class)
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefsStore = SundownPrefs(app)
@@ -252,23 +254,25 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repo.messages.collect { message -> toast(message) }
         }
+        // SQLite work and index diffing must stay off the main thread. The
+        // index itself applies only changed rows, even though Room emits a full
+        // library snapshot after each committed scan batch.
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.tracks.collect { tracks -> searchIndex.synchronize(tracks) }
+        }
         viewModelScope.launch {
-            var indexedSignature: Int? = null
-            repo.tracks.collect { tracks ->
-                val signature = tracks.fold(1) { acc, track ->
-                    31 * acc + track.id.hashCode()
-                    31 * acc + track.size.hashCode()
-                    31 * acc + track.mtime.hashCode()
-                    31 * acc + track.title.hashCode()
-                    31 * acc + track.artist.hashCode()
-                    31 * acc + track.album.hashCode()
-                    31 * acc + track.genre.hashCode()
+            repo.mediaStoreChanges
+                .debounce(750)
+                .catch { error ->
+                    if (error !is CancellationException) {
+                        toast(error.message ?: "Automatic device-library updates are unavailable.")
+                    }
                 }
-                if (signature != indexedSignature) {
-                    searchIndex.rebuild(tracks)
-                    indexedSignature = signature
+                .collect {
+                    if (repo.mediaStorePermissionGranted) {
+                        repo.rescanMediaStore(waitForScan = true, notify = false)
+                    }
                 }
-            }
         }
         viewModelScope.launch {
             try {
@@ -289,6 +293,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
+        player.beginQueueRestoration()
         player.onError = ::toast
         player.onDurationResolved = { id, seconds ->
             viewModelScope.launch { runCatching { repo.updateDuration(id, seconds) } }
@@ -318,21 +323,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // A MediaSession can outlive this Activity/ViewModel. Reattach Room
             // metadata to that live queue instead of replacing the song that is
             // already playing with an older DataStore checkpoint.
-            if (player.attachTracks(allTracks)) return
-
-            val byId = allTracks.associateBy(TrackEntity::id)
-            val queue = prefs.queue.mapNotNull(byId::get).distinctBy(TrackEntity::id).toMutableList()
-            val current = prefs.currentId?.let(byId::get)
-            if (current != null && queue.none { it.id == current.id }) queue.add(0, current)
-            if (queue.isNotEmpty()) {
-                val index = queue.indexOfFirst { it.id == prefs.currentId }.takeIf { it >= 0 } ?: 0
-                player.restore(queue, index, prefs.position.coerceAtLeast(0L))
+            if (!player.attachTracks(allTracks)) {
+                val byId = allTracks.associateBy(TrackEntity::id)
+                val queue = prefs.queue.mapNotNull(byId::get).distinctBy(TrackEntity::id).toMutableList()
+                val current = prefs.currentId?.let(byId::get)
+                if (current != null && queue.none { it.id == current.id }) queue.add(0, current)
+                if (queue.isNotEmpty()) {
+                    val index = queue.indexOfFirst { it.id == prefs.currentId }.takeIf { it >= 0 } ?: 0
+                    player.restore(queue, index, prefs.position.coerceAtLeast(0L))
+                }
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             toast(error.message ?: "The saved playback queue could not be restored.")
         }
+        if (player.finishQueueRestoration()) persistSnapshot(player.state.value)
     }
 
     // ---- grouping and filtering --------------------------------------------
@@ -409,13 +415,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         favorites: Set<String>,
         sortNameByTrackId: Map<String, String>,
     ) = run {
-        val ftsIds = if (filter.search.isBlank()) null else searchIndex.search(filter.search)
+        val ftsIds = if (filter.search.isBlank()) null else searchIndex.search(filter.search, tracks)
         tracks.filter { track ->
             (filter.artist == null || track.artistKey == filter.artist) &&
                 (filter.genre == null || track.genre == filter.genre) &&
                 (!filter.favoritesOnly || track.albumKey in favorites) &&
                 (filter.search.isBlank() ||
-                    (ftsIds?.contains(track.id) ?: "${track.title} ${track.artist} ${track.album} ${track.genre}".contains(filter.search, true)))
+                    ((ftsIds == null || track.id in ftsIds) &&
+                        "${track.title} ${track.artist} ${track.album} ${track.genre}".contains(filter.search, true)))
         }.sortedWith(
             compareBy(
                 { sortNameByTrackId[it.id].orEmpty() },
@@ -502,8 +509,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun persistSnapshot(snapshot: PlayerSnapshot) {
         prefsStore.update { current ->
             current.copy(
-                queue = snapshot.queueIds.ifEmpty { current.queue },
-                currentId = snapshot.trackId ?: current.currentId,
+                queue = snapshot.queueIds,
+                currentId = snapshot.trackId,
                 position = snapshot.elapsedMs.coerceAtLeast(0L),
                 volume = if (snapshot.muted) current.volume else snapshot.volume,
                 muted = snapshot.muted,
@@ -563,16 +570,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     // ---- queue --------------------------------------------------------------
 
     fun queueTracks(): List<TrackEntity> = player.queueTracks()
-    fun jumpToQueued(track: TrackEntity) = player.jumpTo(track.id)
-    fun removeFromQueue(track: TrackEntity) = player.removeFromQueue(track.id)
+    fun jumpToQueued(track: TrackEntity) {
+        if (player.jumpTo(track.id)) persistPlaybackState()
+    }
+    fun removeFromQueue(track: TrackEntity) {
+        if (player.removeFromQueue(track.id)) persistPlaybackState()
+    }
     fun clearQueue() {
         player.clearQueue()
+        viewModelScope.launch {
+            prefsStore.update { it.copy(queue = emptyList(), currentId = null, position = 0L) }
+        }
         toast("Queue cleared.")
     }
 
     fun enqueue(tracks: List<TrackEntity>, label: String) {
         if (tracks.isEmpty()) return
-        player.enqueue(tracks)
+        if (!player.enqueue(tracks)) {
+            toast("The playback service is reconnecting. Try adding the songs again.")
+            return
+        }
+        if (player.state.value.hasSource && !player.isQueueRestorationPending) persistPlaybackState()
         toast("Added $label to the queue.")
     }
 

@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore("sundown-prefs")
 
-/** Every persisted value from the web `Prefs` record. */
+/** User settings, local-source access and playback checkpoints stored in DataStore. */
 data class Prefs(
     val volume: Float = 0.8f,
     val muted: Boolean = false,

@@ -26,6 +26,7 @@ class PlaybackService : MediaSessionService() {
     private lateinit var prefs: SundownPrefs
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var checkpointJob: Job? = null
+    private var hasObservedQueue = false
 
     override fun onCreate() {
         super.onCreate()
@@ -40,8 +41,14 @@ class PlaybackService : MediaSessionService() {
                 /* handleAudioFocus = */ true,
             )
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
         player.skipSilenceEnabled = false
+        player.addListener(object : Player.Listener {
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                if (player.mediaItemCount > 0) hasObservedQueue = true
+            }
+        })
 
         val openApp = PendingIntent.getActivity(
             this,
@@ -65,10 +72,11 @@ class PlaybackService : MediaSessionService() {
 
     private suspend fun persistCheckpoint() {
         val player = session?.player ?: return
-        if (player.mediaItemCount == 0) return
         val queue = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+        if (queue.isEmpty() && !hasObservedQueue) return
+        if (queue.isNotEmpty()) hasObservedQueue = true
         val currentId = player.currentMediaItem?.mediaId
-        val position = player.currentPosition.coerceAtLeast(0L)
+        val position = if (queue.isEmpty()) 0L else player.currentPosition.coerceAtLeast(0L)
         val volume = player.volume
         val shuffle = player.shuffleModeEnabled
         val repeat = when (player.repeatMode) {
@@ -79,7 +87,7 @@ class PlaybackService : MediaSessionService() {
         prefs.update { current ->
             current.copy(
                 queue = queue,
-                currentId = currentId ?: current.currentId,
+                currentId = currentId,
                 position = position,
                 // A muted ExoPlayer volume is zero; keep the previous slider
                 // level so unmute and next-launch restoration remain useful.

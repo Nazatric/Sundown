@@ -1,6 +1,5 @@
-//! Library grouping, sorting, search and incremental-scan diffing.
-//! Direct port of the `useMemo` pipelines in the web `App.tsx` so ordering and
-//! grouping rules stay byte-for-byte identical.
+//! Shared key, grouping, sorting, search and incremental-scan helpers.
+//! Android currently owns the Room-backed grouping and search pipelines.
 
 use crate::model::{AlbumGroup, ArtistGroup, Fingerprint, LibraryIndex, ScanDiff, TrackLite};
 use std::collections::{HashMap, HashSet};
@@ -19,7 +18,7 @@ pub fn artist_key(album_artist: &str, artist: &str) -> String {
     if key.is_empty() { "unknown artist".to_string() } else { key }
 }
 
-/// "The Killers" sorts under K, matching the web `sortName`.
+/// "The Killers" sorts under K in the native library views.
 pub fn sort_name(name: &str) -> String {
     let lower = name.trim().to_lowercase();
     lower.strip_prefix("the ").map(|s| s.to_string()).unwrap_or(lower)
@@ -62,7 +61,7 @@ pub fn build_index(tracks: &[TrackLite]) -> LibraryIndex {
         entry.track_ids.push(track.id.clone());
     }
 
-    // Disc, then track, then title — same comparator as the web album sheet.
+    // Disc, then track, then title within each album.
     let by_id: HashMap<&str, &TrackLite> = tracks.iter().map(|t| (t.id.as_str(), t)).collect();
     for album in albums.values_mut() {
         album.track_ids.sort_by(|a, b| {
@@ -132,7 +131,7 @@ pub fn build_index(tracks: &[TrackLite]) -> LibraryIndex {
     LibraryIndex { albums: album_list, artists: artist_list, genres }
 }
 
-/// Case-insensitive match across title + artist + album, as the web search does.
+/// Case-insensitive match across title, artist and album.
 pub fn search_tracks(tracks: &[TrackLite], query: &str) -> Vec<String> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {

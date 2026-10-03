@@ -1,22 +1,42 @@
-# Native-only verification
+# Native source audit and verification status
 
-This source tree is the consolidated native Sundown implementation.
+Status recorded 2026-10-04. The repository is Android-native and offline-only. This audit covers the current working tree; source inspection is not a substitute for compilation, device testing, signing, or a release artifact.
 
-## Confirmed statically
+## Requested categories
 
-- No HTML, CSS, JavaScript/TypeScript, React/JSX, Vite, web manifest, service worker, or web package files remain.
-- The Android app does not declare `android.permission.INTERNET`.
-- No WebView or Android web-runtime calls are present in `android/app/src/main`.
-- AndroidManifest.xml parses successfully.
-- GitHub Actions workflow YAML parses successfully.
-- Gradle Kotlin DSL and Cargo manifest files are present and internally consistent with the checked source tree.
-- Kotlin sources were passed through the Kotlin compiler parser; the local environment lacks the Android/Compose dependency classpath, so full type/build validation cannot be performed here.
-- The Rust source tree was structurally inspected; the local environment does not contain the Rust/Cargo toolchain, so a Rust build cannot be performed here.
+| Category | Status | Evidence / limitation |
+|---|---|---|
+| Native-only and offline runtime | PASS (source) | Tracked-file inventory found no web runtime, HTML/CSS/JS assets, SVG artwork assets, or iOS project. Android app manifest declares no `INTERNET` permission. |
+| UI/UX preservation | PASS (diff scope) | No screen, component, theme, typography, color, spacing, or navigation-layout files were changed. Screenshot/rendering parity remains UNVERIFIED. |
+| MediaStore discovery and API permissions | PASS (source) | Read-permission branch, MediaStore scan, path/generation fingerprints, and debounced change observer reviewed; device/provider behavior is UNVERIFIED. |
+| SAF discovery and persisted grants | PASS (source) | Tree grants, individual URI ingestion, source fingerprints, and guarded deletion flow reviewed; provider behavior is UNVERIFIED. |
+| Incremental scans and metadata | PASS (source) | Changed rows are parsed in bounded batches off the UI thread; Kotlin/Room and Rust parser changes reviewed. Build and device behavior are UNVERIFIED. |
+| Playback, queue, state restoration and notification artwork | PASS (source) | Media3 service/controller, checkpoint updates (including empty queues), artwork metadata path, and local wake mode reviewed; background/device behavior is UNVERIFIED. |
+| Artwork bounds, invalidation and caches | PASS (source) | Content-derived IDs, bounded previews, memory/disk cache limits and intentional-eviction markers reviewed; image quality and memory behavior are UNVERIFIED. |
+| Room, FTS5 and search | PASS (source) | Room 1→2 migration and incremental FTS5/fallback implementation reviewed. Host SQLite 3.40.1 FTS5 create/insert/update/delete/substring probe PASS; Android SQLite availability and large-library performance are UNVERIFIED. |
+| Release APK configuration | PASS (source) | ABI splits are disabled and optional environment/secret-based universal-APK signing is configured. A signed APK is BLOCKED by the missing build toolchain and signing material. |
+| iOS / IPA | BLOCKED / NOT APPLICABLE | No native iOS project exists, so no IPA was built or claimed. |
+| Android/Rust compilation and unit tests | BLOCKED | This environment has no JDK, Gradle distribution/wrapper, Android SDK/NDK, Rust/Cargo/cargo-ndk, Kotlin compiler, or adb. No Android/Rust build or unit-test run is claimed. |
+| Device, screenshot and performance validation | UNVERIFIED | No emulator or physical Android device is available here. |
 
-## Implemented native fixes/features
+## Static checks completed
 
-MediaStore device-music discovery and Android-version-specific audio permission flow; persisted SAF folders and individual file URI access; hybrid Android MediaMetadataRetriever + Rust metadata parsing; real duration persistence; BLAKE3-derived artwork identity; incremental scan/prune behavior; FTS5 library search accelerator with in-memory fallback; bounded scan parallelism; coalesced multi-level artwork loading with compact WebP thumbnails where beneficial; Media3 background playback and MediaSession metadata/artwork; queue support; correct playlist-name ellipsis behavior; Songs A–Z indexing aligned to artist sorting; native BackHandler/predictive-back integration; immersive edge-to-edge presentation and device refresh-rate usage; offline-only runtime with no network permission.
+- `git diff --check`: PASS.
+- Python `xml.etree.ElementTree` parsing of all 8 Android XML files: PASS.
+- Android manifest permission inspection: PASS — no declared `android.permission.INTERNET`.
+- Tracked/source-tree inventory: PASS — no web source/runtime extensions, iOS source directory, SVG artwork assets, or raster artwork assets were found in the audited checkout.
+- Host SQLite 3.40.1 FTS5 trigram probe: PASS for external-content triggers, substring phrase matching, updates, and deletes. This does **not** validate FTS5 on Android.
 
-## Not claimed
+## Not performed / not claimed
 
-An on-device APK install, screenshot comparison, 90/120 Hz frame-pacing measurement, memory/battery benchmark, Rust cross-compilation, or release APK signing was not performed in this packaging environment because the required Android SDK/NDK, Gradle runtime/dependencies, and Rust Android toolchain are unavailable here. The included CI workflow is configured to perform those builds in GitHub Actions when the required environment and release signing secrets are available.
+No Kotlin or Rust compiler/parser, Gradle build, Rust unit-test run, Android unit-test run, APK assembly, emulator/device install, playback/SAF exercise, screenshot comparison, performance/memory benchmark, release signing, or IPA build was performed in this environment. Historical CI references from other commits are not evidence for the current revision.
+
+## Toolchain-backed checks to run later
+
+With JDK 17, Android SDK 34, NDK 26.3.11579264, Rust Android targets, and `cargo-ndk` installed:
+
+```text
+gradle :app:testDebugUnitTest :app:assembleDebug
+```
+
+Then install and exercise MediaStore/SAF permissions, metadata and artwork, MediaSession background playback, queue/process restoration, back/predictive back, system insets, and the UI at the documented viewport. Build a signed universal APK only when valid signing material is configured; do not build an IPA without a native iOS project.

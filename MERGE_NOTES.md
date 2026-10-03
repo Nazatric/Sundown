@@ -1,12 +1,10 @@
-# Native merge notes
+# Native architecture notes
 
-Two supplied Sundown source archives were compared. Only native Android/Rust content was retained.
+This repository contains the Android implementation only. The tracked tree has no web runtime or native iOS project. These notes describe the current architecture; they are not a build or runtime-verification record.
 
-## Selection
+- Kotlin/Compose owns screens, navigation, MediaStore/SAF access, Room-backed library indexing, and playback state.
+- Media3/ExoPlayer and `MediaSessionService` own foreground/background playback.
+- Rust/UniFFI supplies bounded metadata parsing, embedded-art previews, normalized keys, and BLAKE3 hashing; Kotlin retains Android/platform fallbacks.
+- Release configuration targets one universal APK with optional environment/secret-based signing. No AAB or IPA artifact is claimed.
 
-- Native app architecture, library scanning, SAF handling, artwork cache, playback lifecycle, state separation, metadata fallback, duration handling, Rust/UniFFI build pipeline, and Rust metadata/artwork hardening: selected from the stronger implementation.
-- Native queue management and backup rules: retained where they improved the requested native app.
-- Old fallback-only `nativecore/SundownCore.kt` and the redundant `MetadataExtractor.kt`: not copied because the selected Rust/UniFFI + platform fallback path already covers their supported responsibilities with a reproducible native build.
-- Web React/Vite source, web manifest, service worker, public web assets, and web build configuration: removed completely.
-
-No APK was claimed as device-verified during packaging; the archive was source-integrated and statically checked instead.
+See `NATIVE_VERIFICATION.md` for the current audit, static checks, and build/device limitations.

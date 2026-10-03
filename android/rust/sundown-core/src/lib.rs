@@ -1,9 +1,7 @@
-//! Sundown Music native core.
+//! Sundown native core.
 //!
-//! Holds the CPU-bound, purely functional half of the player: audio tag
-//! parsing, cover-art decoding/resizing, and library grouping/search/diffing.
-//! Kotlin owns UI, storage, SAF and playback; this crate owns the hot paths
-//! that run hundreds of times during an import.
+//! Kotlin owns Android UI, storage, SAF and playback; this crate provides
+//! bounded metadata parsing, artwork processing and library helper routines.
 
 uniffi::setup_scaffolding!();
 
@@ -71,6 +69,12 @@ pub fn blake3_key(value: String) -> String {
     blake3::hash(value.as_bytes()).to_hex().to_string()
 }
 
+/// Hashes raw artwork bytes without expanding them into a temporary text encoding.
+#[uniffi::export]
+pub fn blake3_bytes_key(bytes: Vec<u8>) -> String {
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
 #[uniffi::export]
 pub fn jump_index(keys: Vec<String>, letter: String) -> Option<u32> {
     index::jump_index(&keys, &letter)
@@ -92,6 +96,14 @@ mod tests {
     fn sort_name_drops_leading_the() {
         assert_eq!(sort_name_of("The Killers".into()), "killers");
         assert_eq!(sort_name_of("Theory".into()), "theory");
+    }
+
+    #[test]
+    fn blake3_artwork_key_hashes_bytes_directly() {
+        assert_eq!(
+            blake3_bytes_key(b"abc".to_vec()),
+            "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85",
+        );
     }
 
     #[test]

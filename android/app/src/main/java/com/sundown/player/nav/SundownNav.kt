@@ -7,7 +7,7 @@ import android.net.Uri
  *
  * Tabs are intentionally **not** destinations. They are top-level views, so
  * pressing back on a tab leaves the app instead of walking tab history — the
- * behaviour explicitly requested after the web build looped through
+ * behavior explicitly retained to avoid tab-history back loops through
  * Songs -> Albums -> Playlists. This matches Android's guidance for top-level
  * destinations.
  *

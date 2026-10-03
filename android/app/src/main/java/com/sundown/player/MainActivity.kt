@@ -126,7 +126,7 @@ class MainActivity : ComponentActivity() {
         }
         WindowInsetsControllerCompat(window, window.decorView).apply {
             // Keep Android's navigation/gesture bar available for native Back;
-            // only the faux CSS status strip is drawn by Compose.
+            // only the Compose status strip is drawn by the app.
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.statusBars())
             isAppearanceLightNavigationBars = false

@@ -1,9 +1,9 @@
-# Phase 2 — Pixel specification (CSS → Compose)
+# Pixel specification — historical design reference for Compose
 
 ## Viewport & unit mapping
 
 This is a measured design target, not a screenshot-validated native result.
-The Android debug build passes in CI, but no device comparison has been made.
+No Android/Rust build or device screenshot comparison has been verified for the current source revision.
 
 The original design was mobile-first, authored against a 9:16 Android phone with
 `<meta viewport width=device-width>`. On Android Chrome the layout viewport in
@@ -14,8 +14,7 @@ The original design was mobile-first, authored against a 9:16 Android phone with
 1 CSS px  ==  1 dp        (font sizes — see "font scaling" below)
 ```
 
-Reference device: 1080 × 2400 px @ 2.75 ⇒ **393 × 873 dp** (also verified
-against 360 dp and 412 dp widths — all three are covered by the breakpoints).
+Reference device target: 1080 × 2400 px @ 2.75 ⇒ **393 × 873 dp**. The original design also specified 360 dp and 412 dp widths; native rendering at those sizes remains unverified.
 
 Do **not** convert via the 96-dpi CSS reference; `device-width` already
 normalises it.

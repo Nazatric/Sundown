@@ -1,5 +1,4 @@
-//! Shared records crossing the UniFFI boundary.
-//! Field names mirror the web app's `TrackRec` so the port stays 1:1.
+//! Data records crossing the UniFFI boundary.
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct Tags {
@@ -29,7 +28,7 @@ pub struct ArtPreviews {
     pub small: Vec<u8>,
 }
 
-/// Minimal track shape needed for grouping and search.
+/// Minimal track shape used by the optional native library helpers.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TrackLite {
     pub id: String,

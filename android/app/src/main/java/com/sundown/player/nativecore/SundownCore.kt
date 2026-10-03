@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.util.Log
 import uniffi.sundown_core.albumKeyOf as rustAlbumKeyOf
 import uniffi.sundown_core.blake3Key as rustBlake3Key
+import uniffi.sundown_core.blake3BytesKey as rustBlake3BytesKey
 import uniffi.sundown_core.artistKeyOf as rustArtistKeyOf
 import uniffi.sundown_core.makeArtPreviews as rustMakeArtPreviews
 import uniffi.sundown_core.parseTags as rustParseTags
@@ -78,11 +79,15 @@ object SundownCore {
         else fallbackSortName(name)
 
     fun blake3Key(value: String): String =
-        if (loaded) runCatching { rustBlake3Key(value) }.getOrElse { sha256Fallback(value) }
-        else sha256Fallback(value)
+        if (loaded) runCatching { rustBlake3Key(value) }.getOrElse { sha256Fallback(value.toByteArray(Charsets.UTF_8)) }
+        else sha256Fallback(value.toByteArray(Charsets.UTF_8))
 
-    private fun sha256Fallback(value: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8))
+    fun artworkKey(bytes: ByteArray): String =
+        if (loaded) runCatching { rustBlake3BytesKey(bytes) }.getOrElse { sha256Fallback(bytes) }
+        else sha256Fallback(bytes)
+
+    private fun sha256Fallback(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
         .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
     private fun nativeParse(head: ByteArray, tail: ByteArray, fallback: String): Parsed {

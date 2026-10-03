@@ -1,5 +1,5 @@
-//! Container-aware tag readers: ID3v2/ID3v1, MP4/M4A atoms, FLAC, OGG, RIFF/WAV.
-//! Ported from the web worker so the native app reads exactly the same fields.
+//! Bounded, container-aware tag readers for offline local audio: ID3, MP4/M4A,
+//! FLAC, OGG, and RIFF/WAV.
 
 use crate::model::{ParsedFile, Tags};
 use crate::text::{clean_genre, decode_id3, first_number, latin1};
@@ -90,24 +90,31 @@ fn parse_id3v2(b: &[u8], tags: &mut Tags) -> Option<Picture> {
         return None;
     }
     let version = b[3];
+    if !(2..=4).contains(&version) {
+        return None;
+    }
     let flags = b[5];
+    // ID3v2.2 compression is not supported by this bounded slice parser.
+    if version == 2 && flags & 0x40 != 0 {
+        return None;
+    }
     let size = syncsafe(b, 6) as usize;
     let end = (10 + size).min(b.len());
     let mut body: Vec<u8> = b[10..end].to_vec();
 
-    // Extended header.
-    if flags & 0x40 != 0 && body.len() > 4 {
+    // Extended headers are present in v2.3/v2.4 only.
+    if version >= 3 && flags & 0x40 != 0 && body.len() > 4 {
         let ext = if version == 4 {
             syncsafe(&body, 0) as usize
         } else {
             u32be(&body, 0) as usize + 4
         };
-        if ext < body.len() {
+        if ext > 0 && ext <= body.len() {
             body.drain(0..ext);
         }
     }
-    // Global unsynchronisation (v3): undo 0xFF 0x00 padding.
-    if flags & 0x80 != 0 && version == 3 {
+    // Undo tag-level unsynchronisation before walking frames.
+    if flags & 0x80 != 0 {
         let mut out = Vec::with_capacity(body.len());
         let mut i = 0;
         while i < body.len() {
@@ -120,76 +127,147 @@ fn parse_id3v2(b: &[u8], tags: &mut Tags) -> Option<Picture> {
         body = out;
     }
 
+    let header_size = if version == 2 { 6 } else { 10 };
     let mut picture = None;
     let mut off = 0usize;
-    while off + 10 <= body.len() {
+    while off + header_size <= body.len() {
         if body[off] == 0 {
             break; // padding
         }
-        let id = fourcc(&body, off);
-        let frame_size = match version {
-            3 => u32be(&body, off + 4) as usize,
-            4 => syncsafe(&body, off + 4) as usize,
-            _ => break,
+        let id = if version == 2 {
+            latin1(&body[off..off + 3])
+        } else {
+            fourcc(&body, off)
         };
-        if frame_size == 0 || off + 10 + frame_size > body.len() {
+        let frame_size = if version == 2 {
+            u24be(&body, off + 3) as usize
+        } else if version == 3 {
+            u32be(&body, off + 4) as usize
+        } else {
+            syncsafe(&body, off + 4) as usize
+        };
+        let Some(frame_end) = off
+            .checked_add(header_size)
+            .and_then(|start| start.checked_add(frame_size))
+            .filter(|end| frame_size > 0 && *end <= body.len())
+        else {
+            break;
+        };
+        let frame = &body[off + header_size..frame_end];
+        if frame.is_empty() {
             break;
         }
-        let frame = &body[off + 10..off + 10 + frame_size];
         let enc = frame[0];
         let text = || decode_id3(enc, &frame[1..]);
         match id.as_str() {
-            "TIT2" => tags.title = text(),
-            "TPE1" => tags.artist = text(),
-            "TPE2" => tags.album_artist = text(),
-            "TALB" => tags.album = text(),
-            "TRCK" => tags.track_no = first_number(&text()),
-            "TPOS" => tags.disc_no = first_number(&text()),
-            "TYER" | "TDRC" => tags.year = first_number(&text()),
-            "TCON" => tags.genre = clean_genre(&text()),
+            "TIT2" | "TT2" => tags.title = text(),
+            "TPE1" | "TP1" => tags.artist = text(),
+            "TPE2" | "TP2" => tags.album_artist = text(),
+            "TALB" | "TAL" => tags.album = text(),
+            "TRCK" | "TRK" => tags.track_no = first_number(&text()),
+            "TPOS" | "TPA" => tags.disc_no = first_number(&text()),
+            "TYER" | "TYE" | "TDRC" => tags.year = first_number(&text()),
+            "TCON" | "TCO" => tags.genre = clean_genre(&text()),
+            "TXXX" | "TXX" => {
+                if let Some((description, value)) = parse_user_text(frame) {
+                    if matches!(description.trim().to_ascii_uppercase().as_str(), "ALBUMARTIST" | "ALBUM ARTIST")
+                        && tags.album_artist.is_empty()
+                    {
+                        tags.album_artist = value;
+                    }
+                }
+            }
             "APIC" if picture.is_none() => picture = parse_apic(frame),
+            "PIC" if picture.is_none() => picture = parse_pic(frame),
             _ => {}
         }
-        off += 10 + frame_size;
+        off += header_size + frame_size;
     }
     picture
+}
+
+fn parse_user_text(frame: &[u8]) -> Option<(String, String)> {
+    let encoding = *frame.first()?;
+    let bytes = &frame[1..];
+    let separator = if encoding == 1 || encoding == 2 {
+        bytes
+            .chunks_exact(2)
+            .position(|unit| unit[0] == 0 && unit[1] == 0)
+            .map(|unit| unit * 2)?
+    } else {
+        bytes.iter().position(|byte| *byte == 0)?
+    };
+    let separator_size = if encoding == 1 || encoding == 2 { 2 } else { 1 };
+    let description = decode_id3(encoding, &bytes[..separator]);
+    let value_start = separator.checked_add(separator_size)?;
+    if value_start > bytes.len() {
+        return None;
+    }
+    Some((description, decode_id3(encoding, &bytes[value_start..])))
+}
+
+fn picture_description_end(frame: &[u8], encoding: u8, mut offset: usize) -> Option<usize> {
+    if encoding == 1 || encoding == 2 {
+        while offset + 1 < frame.len() && !(frame[offset] == 0 && frame[offset + 1] == 0) {
+            offset += 2;
+        }
+        if offset + 1 >= frame.len() {
+            return None;
+        }
+        Some(offset + 2)
+    } else {
+        while offset < frame.len() && frame[offset] != 0 {
+            offset += 1;
+        }
+        if offset >= frame.len() {
+            return None;
+        }
+        Some(offset + 1)
+    }
 }
 
 fn parse_apic(frame: &[u8]) -> Option<Picture> {
     if frame.len() < 4 {
         return None;
     }
-    let enc = frame[0];
-    let mut p = 1usize;
-    // MIME: Latin-1, NUL terminated.
-    let mime_start = p;
-    while p < frame.len() && frame[p] != 0 {
-        p += 1;
+    let encoding = frame[0];
+    let mut offset = 1usize;
+    let mime_start = offset;
+    while offset < frame.len() && frame[offset] != 0 {
+        offset += 1;
     }
-    let mime = latin1(&frame[mime_start..p]);
-    p += 1; // NUL
-    if p >= frame.len() {
+    if offset >= frame.len() {
         return None;
     }
-    p += 1; // picture type byte
-    // Description, terminated by NUL (1 byte) or NUL NUL (UTF-16).
-    if enc == 1 || enc == 2 {
-        while p + 1 < frame.len() && !(frame[p] == 0 && frame[p + 1] == 0) {
-            p += 2;
-        }
-        p += 2;
-    } else {
-        while p < frame.len() && frame[p] != 0 {
-            p += 1;
-        }
-        p += 1;
-    }
-    if p >= frame.len() {
+    let mime = latin1(&frame[mime_start..offset]);
+    offset += 1; // MIME terminator
+    if offset >= frame.len() {
         return None;
     }
+    offset += 1; // picture type
+    let data_offset = picture_description_end(frame, encoding, offset)?;
     Some(Picture {
-        data: frame[p..].to_vec(),
+        data: frame[data_offset..].to_vec(),
         mime: if mime.is_empty() { "image/jpeg".into() } else { mime },
+    })
+}
+
+/// ID3v2.2 PIC stores a three-byte image format instead of a MIME string.
+fn parse_pic(frame: &[u8]) -> Option<Picture> {
+    if frame.len() < 6 {
+        return None;
+    }
+    let encoding = frame[0];
+    let format = latin1(&frame[1..4]).to_ascii_uppercase();
+    let mime = match format.as_str() {
+        "PNG" => "image/png",
+        "JPG" => "image/jpeg",
+        _ => "image/jpeg",
+    };
+    let data_offset = picture_description_end(frame, encoding, 5)?; // format, type, description
+    Some(Picture {
+        data: frame[data_offset..].to_vec(),
+        mime: mime.into(),
     })
 }
 
@@ -633,5 +711,62 @@ mod tests {
         let _ = parse_mp4_tail(&tail, &mut tags);
         assert_eq!(tags.title, "head title");
         assert_eq!(tags.album, "tail album");
+    }
+
+    fn id3v2_tag(version: u8, body: &[u8]) -> Vec<u8> {
+        let size = body.len();
+        let mut bytes = b"ID3".to_vec();
+        bytes.extend_from_slice(&[version, 0, 0]);
+        bytes.extend_from_slice(&[
+            ((size >> 21) & 0x7F) as u8,
+            ((size >> 14) & 0x7F) as u8,
+            ((size >> 7) & 0x7F) as u8,
+            (size & 0x7F) as u8,
+        ]);
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    #[test]
+    fn parses_id3v22_three_character_text_frames() {
+        let text = b"\0Older title";
+        let mut frame = b"TT2".to_vec();
+        frame.extend_from_slice(&[0, 0, text.len() as u8]);
+        frame.extend_from_slice(text);
+
+        let parsed = parse(&id3v2_tag(2, &frame), &[], "fallback");
+        assert_eq!(parsed.tags.title, "Older title");
+    }
+
+    #[test]
+    fn parses_id3v22_pic_frames() {
+        let image = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let mut payload = vec![0];
+        payload.extend_from_slice(b"PNG");
+        payload.push(3); // front cover
+        payload.push(0); // empty description
+        payload.extend_from_slice(&image);
+        let mut frame = b"PIC".to_vec();
+        frame.extend_from_slice(&[
+            ((payload.len() >> 16) & 0xFF) as u8,
+            ((payload.len() >> 8) & 0xFF) as u8,
+            (payload.len() & 0xFF) as u8,
+        ]);
+        frame.extend_from_slice(&payload);
+
+        let parsed = parse(&id3v2_tag(2, &frame), &[], "fallback");
+        assert_eq!(parsed.picture, Some(image.to_vec()));
+        assert_eq!(parsed.picture_mime, "image/png");
+    }
+
+    #[test]
+    fn parses_album_artist_from_id3_user_text() {
+        let payload = b"\0ALBUM ARTIST\0Kings of Leon";
+        let mut frame = b"TXX".to_vec();
+        frame.extend_from_slice(&[0, 0, payload.len() as u8]);
+        frame.extend_from_slice(payload);
+
+        let parsed = parse(&id3v2_tag(2, &frame), &[], "fallback");
+        assert_eq!(parsed.tags.album_artist, "Kings of Leon");
     }
 }

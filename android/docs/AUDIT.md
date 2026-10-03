@@ -1,13 +1,8 @@
-# Original design audit — native mapping
+# Native design audit — source mapping
 
-This document records the original design/behavior inventory used while selecting and validating the native implementation. The original web source is not shipped in this native-only repository.
+This document is a reference inventory of the existing screens and behaviors. The original web design is not shipped in this native-only repository, and this inventory is not a certification of visual parity.
 
-This document is the **reference inventory**, not a certification of parity.
-The Android source passed CI compilation/tests and debug packaging on code
-commit `4174326`, but it has not been installed or run on a device; mappings
-below indicate intended native counterparts only. See `PARITY.md` for known
-gaps and verification status. A CI build does not prove runtime behavior or
-visual parity.
+The current working source has not been Android/Rust built or device-tested in this environment. Older CI notes from other commits do not verify this revision. Mappings below describe intended native counterparts only; see `PARITY.md` and the root `NATIVE_VERIFICATION.md` for the current status.
 
 ## 1. Screens / destinations
 
@@ -91,7 +86,7 @@ volume, muted, shuffle, repeat, queue, hasSource).
 | Web | Native |
 |---|---|
 | IndexedDB `tracks` store | Room table `tracks` |
-| IndexedDB `art` store (340 px + 96 px JPEG blobs) | App-private files `art/{id}_{lg,sm}.jpg` + Room index (up to 1024 px + 160 px, JPEG q92) |
+| IndexedDB `art` store (340 px + 96 px JPEG blobs) | App-private artwork files plus Room IDs (up to 1024 px + 160 px; small WebP when smaller on supported Android versions) |
 | IndexedDB `prefs` | Preferences DataStore |
 | IndexedDB `handles` (directory handle) | Persisted SAF tree URI permission |
 | Object URLs | `content://` URIs + `ParcelFileDescriptor` |
@@ -99,7 +94,7 @@ volume, muted, shuffle, repeat, queue, hasSource).
 ## 6. Background / async work
 
 - Recursive folder walk (web: `FileSystemDirectoryHandle.values()`).
-- Incremental Kotlin diff by `(size, mtime)` fingerprint → added / updated / removed. (Rust exposes a diff helper, but the repository does not currently call it.)
+- Incremental Kotlin diff by source identity, document URI/path, size, modification time, and (on API 30+) MediaStore generation → added / updated / removed. Metadata/search work is performed off the UI thread; Kotlin owns scanning and indexing.
 - Metadata parse pool (web: 2–4 Blob workers) → Rust + Kotlin coroutine
   dispatcher (`Dispatchers.IO.limitedParallelism`, clamped to 2–4).
 - Artwork center-crop to up to 1024 px and 160 px JPEG q92 previews; small source art is not upscaled. Rust decoding has source-size limits, and cover conversions are serialized during scans to bound transient heap use.
