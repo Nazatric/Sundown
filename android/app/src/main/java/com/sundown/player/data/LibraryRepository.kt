@@ -407,7 +407,7 @@ class LibraryRepository(
             dao.clearTracks()
             dao.clearPlaylists()
             artwork.clear()
-            prefs.update { Prefs() }
+            prefs.update { current -> Prefs(audioPermissionPrompted = current.audioPermissionPrompted) }
             _messages.send("Library data erased. Choose your music folder to start over.")
         } catch (cancelled: CancellationException) {
             throw cancelled

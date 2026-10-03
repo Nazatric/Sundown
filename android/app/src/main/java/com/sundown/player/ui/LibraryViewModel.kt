@@ -88,6 +88,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val prefsStore = SundownPrefs(app)
     val artwork = ArtworkStore(app)
     private val repo = LibraryRepository(app, prefsStore, artwork)
+    private val mediaStorePermission = MutableStateFlow(repo.mediaStorePermissionGranted)
     private val searchIndex = SearchIndex(app)
     val player = PlayerController(app, artwork)
     val libraryPlaybackState: StateFlow<LibraryPlaybackState> = player.state
@@ -224,7 +225,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, FilteredContent())
 
-    val state: StateFlow<LibraryUiState> = combine(filteredContent, uiPrefs, repo.progress, localState) { content, prefs, scan, local ->
+    val state: StateFlow<LibraryUiState> = combine(
+        filteredContent, uiPrefs, repo.progress, localState, mediaStorePermission,
+    ) { content, prefs, scan, local, permissionGranted ->
         LibraryUiState(
             booted = local.booted,
             tab = local.tab,
@@ -246,7 +249,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             prefs = prefs,
             scan = scan,
             notice = local.notice,
-            mediaStorePermission = repo.mediaStorePermissionGranted,
+            mediaStorePermission = permissionGranted,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryUiState())
 
@@ -522,6 +525,31 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- library management -------------------------------------------------
 
+    /** Atomically consumes the one-time first-launch permission prompt. */
+    suspend fun consumeStartupAudioPermissionPrompt(): Boolean {
+        var shouldPrompt = false
+        prefsStore.update { current ->
+            if (current.audioPermissionPrompted) current
+            else {
+                shouldPrompt = true
+                current.copy(audioPermissionPrompted = true)
+            }
+        }
+        return shouldPrompt
+    }
+
+    suspend fun markAudioPermissionPrompted() {
+        prefsStore.update { it.copy(audioPermissionPrompted = true) }
+    }
+
+    /** Re-reads Android's live permission state; never treats DataStore as a grant. */
+    fun refreshMediaStorePermission(scanIfAlreadyGranted: Boolean = false) {
+        val granted = repo.mediaStorePermissionGranted
+        val changed = mediaStorePermission.value != granted
+        if (changed) mediaStorePermission.value = granted
+        if (granted && (changed || scanIfAlreadyGranted)) rescanDeviceMusic(waitForScan = true)
+    }
+
     fun connectFolder(uri: Uri) = viewModelScope.launch { repo.connectFolder(uri) }
     fun rescan() = viewModelScope.launch {
         prefsStore.flow.first().treeUri?.let { repo.rescan(Uri.parse(it)) }
@@ -534,7 +562,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         repo.disconnectFolder(prefsStore.flow.first().treeUri)
     }
     fun ingestFiles(uris: List<Uri>) = viewModelScope.launch { repo.ingestFiles(uris) }
-    fun rescanDeviceMusic() = viewModelScope.launch { repo.rescanMediaStore() }
+    fun rescanDeviceMusic(waitForScan: Boolean = false) = viewModelScope.launch {
+        repo.rescanMediaStore(waitForScan = waitForScan)
+    }
     fun clearArtwork() = viewModelScope.launch { repo.clearArtwork() }
     fun eraseEverything() = viewModelScope.launch {
         player.clearQueue()

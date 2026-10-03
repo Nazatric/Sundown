@@ -23,7 +23,8 @@ class ArtworkStore(context: Context) : ArtworkLoader {
 
     private val dir = File(context.filesDir, "art").apply { mkdirs() }
     private val generation = AtomicLong(0L)
-    private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Bound concurrent bitmap decoding across visible and prefetched artwork.
+    private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(2))
     private val inFlight = ConcurrentHashMap<String, Deferred<ImageBitmap?>>()
     private val cache = object : LruCache<String, ImageBitmap>(cacheCapacityBytes()) {
         override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4

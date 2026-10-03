@@ -4,7 +4,7 @@ Sundown is Android-native and offline-only. Kotlin/Compose owns the UI and Andro
 
 ## Implemented in source
 
-- MediaStore device-music discovery with Android 13+ `READ_MEDIA_AUDIO` and Android 12-and-earlier `READ_EXTERNAL_STORAGE` permissions, relative-path fingerprints, API 30+ generation fingerprints, and debounced content-change observation.
+- One-time first-launch local-audio permission request (`READ_MEDIA_AUDIO` on Android 13+, `READ_EXTERNAL_STORAGE` on Android 12 and earlier), live PackageManager re-checks on resume, and a queued scan immediately after grant. Permission denial is represented honestly; SAF remains independent.
 - SAF folder access with persisted grants, path/document-URI/size/mtime fingerprints, and pruning only after a complete provider walk and successful parsing pass.
 - Incremental one-off file ingestion that avoids reparsing unchanged imports.
 - Hybrid metadata extraction: `MediaMetadataRetriever` supplies duration and broad container compatibility; the bounded Rust parser fills tag/art gaps, including ID3v2.2 text and `PIC` frames.
@@ -12,10 +12,11 @@ Sundown is Android-native and offline-only. Kotlin/Compose owns the UI and Andro
 - Content-derived artwork IDs (BLAKE3 of embedded bytes; SHA-256 fallback when the native library is unavailable), so changed cover bytes do not reuse album-name cache entries.
 - Optional SQLite FTS5 trigram substring-search acceleration. Changed track documents are synchronized incrementally off the UI thread; short/non-ASCII queries and unsupported SQLite builds use the exact Kotlin substring fallback.
 - Bounded scan parallelism and batched Room writes/deletes.
-- Artwork previews bounded to 1024 px and 160 px, a bounded memory LRU, a 128 MiB disk cache, coalesced decode jobs, nearby-item preloading, and compact WebP row-art where it saves space. Intentional disk-LRU evictions are marked so scans do not repeatedly reparse the same covers; explicit cache clearing removes those markers.
-- Media3 background playback, MediaSession artwork, wake mode for local audio, and persisted queue/position including explicit empty-queue checkpoints; queue edits made during startup are applied only after live-session versus saved-queue reconciliation.
-- Native Android back navigation and predictive-back integration; fullscreen/system-inset behavior remains in the existing Compose shell.
-- High-refresh display behavior is left under Android/device control rather than forcing 60 Hz.
+- Artwork previews bounded to 1024 px and 160 px, a bounded memory LRU, a 128 MiB disk cache, coalesced decoding limited to two concurrent bitmap jobs, nearby-item preloading, and a short placeholder crossfade. Content-derived art IDs prevent album-name cache collisions; explicit cache clearing invalidates eviction markers.
+- Media3 `MediaSessionService` background playback and platform media notification/lock-screen controls, session artwork, wake mode for local audio, and persisted queue/position including explicit empty-queue checkpoints; queue edits made during startup are applied only after live-session versus saved-queue reconciliation. Media-session notifications are exempt from the Android 13+ notification runtime-permission gate, so no unrelated `POST_NOTIFICATIONS` prompt is added.
+- The compact segmented tabs preserve the full “Playlists” label by reducing only cell padding. A–Z navigation supports taps and vertical scrubbing, highlights the visible letter, ignores empty letters during drags, and uses ASCII `#` fallback consistently with Rust sorting.
+- Native Android back navigation and predictive-back integration; Sources close remains in the fixed toolbar outside the scrollable content. Fullscreen/system-inset behavior remains in the existing Compose shell and is not device-verified.
+- High-refresh display behavior is left under Android/device control rather than forcing 60 Hz; smoothness or 90/120 Hz frame pacing is not claimed without profiler/device evidence.
 - No `INTERNET` permission and no online metadata/cloud dependency.
 
 ## Deliberately not forced into the APK

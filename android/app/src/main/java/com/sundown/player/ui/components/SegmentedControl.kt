@@ -16,15 +16,15 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.sundown.player.ui.theme.*
 
 /**
  * `.segmented-control` — the five library tabs.
  *
- * Each segment is `flex: 1 1 0` with `min-width: 0`, which is what stopped the
- * labels colliding on narrow phones in the web build. The Compose equivalent is
- * `weight(1f)` + `Ellipsis`, so the same guarantee holds at 320 dp.
+ * Each segment is `flex: 1 1 0` with `min-width: 0`. On compact phones only the
+ * segment's inner padding is reduced, preserving the toolbar and type size.
  */
 @Composable
 fun SegmentedControl(
@@ -32,6 +32,7 @@ fun SegmentedControl(
     selectedIndex: Int,
     modifier: Modifier = Modifier,
     fontSize: Float = 13f,
+    horizontalPadding: Dp = D.segmentPadH,
     onSelect: (Int) -> Unit,
 ) {
     Row(
@@ -50,7 +51,7 @@ fun SegmentedControl(
                     .fillMaxHeight()
                     .background(if (selected) G.tabSelected else G.tabIdle)
                     .then(clickModifier)
-                    .padding(horizontal = D.segmentPadH),
+                    .padding(horizontal = horizontalPadding),
             ) {
                 Text(
                     text = label,

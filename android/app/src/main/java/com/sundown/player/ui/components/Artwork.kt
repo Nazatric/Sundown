@@ -1,5 +1,7 @@
 package com.sundown.player.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -77,19 +79,27 @@ fun ArtworkImage(
     }
 
     val image = bitmap
-    if (image != null) {
-        Image(
-            bitmap = image,
-            contentDescription = null,
-            modifier = modifier,
-            // Square crop keeps every cover the same visual proportion even
-            // when the embedded art is 3:2 or 1500x1000.
-            contentScale = ContentScale.Crop,
-            colorFilter = colorFilter,
-            alpha = alpha,
-        )
-    } else {
-        SleevePlaceholder(modifier)
+    val imageFade by animateFloatAsState(
+        targetValue = if (image == null) 0f else 1f,
+        animationSpec = tween(durationMillis = 140),
+        label = "artwork-fade-in",
+    )
+    Box(modifier) {
+        if (image == null || imageFade < 1f) {
+            SleevePlaceholder(Modifier.matchParentSize())
+        }
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                modifier = Modifier.matchParentSize().graphicsLayer { this.alpha = imageFade },
+                // Square crop keeps every cover the same visual proportion even
+                // when the embedded art is 3:2 or 1500x1000.
+                contentScale = ContentScale.Crop,
+                colorFilter = colorFilter,
+                alpha = alpha,
+            )
+        }
     }
 }
 
@@ -184,6 +194,20 @@ fun AlbumStack(
                 .border(1.dp, P.SleeveEdge, RoundedCornerShape(D.sleeveRadius)),
         ) {
             ArtworkImage(artId, small, Modifier.fillMaxSize())
+            // A restrained, diagonal specular sheen restores the glossy front-sleeve finish
+            // without obscuring the cover artwork or rasterizing a functional layer.
+            Canvas(Modifier.matchParentSize()) {
+                drawRect(
+                    brush = Brush.linearGradient(
+                        0.00f to Color.White.copy(alpha = 0.10f),
+                        0.18f to Color.White.copy(alpha = 0.05f),
+                        0.42f to Color.Transparent,
+                        1.00f to Color.Transparent,
+                        start = Offset.Zero,
+                        end = Offset(size.width, size.height),
+                    ),
+                )
+            }
             // .sleeve--front::after — 1px warm hairline inside the edge.
             Box(
                 Modifier

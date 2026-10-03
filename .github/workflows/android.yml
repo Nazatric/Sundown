@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   build:
-    name: Rust tests and Android release APK
+    name: Rust tests, Android builds and conditional release APK
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -120,10 +120,18 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [[ -n "$KEYSTORE_B64" && -n "$STORE_PASSWORD" && -n "$KEY_ALIAS" && -n "$KEY_PASSWORD" ]]; then
+          missing=()
+          [[ -n "$KEYSTORE_B64" ]] || missing+=(KEYSTORE_BASE64)
+          [[ -n "$STORE_PASSWORD" ]] || missing+=(KEYSTORE_PASSWORD)
+          [[ -n "$KEY_ALIAS" ]] || missing+=(KEY_ALIAS)
+          [[ -n "$KEY_PASSWORD" ]] || missing+=(KEY_PASSWORD)
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Release signing inputs are configured." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Release signing is blocked; missing GitHub Actions secret(s): ${missing[*]}." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Release signing unavailable::Missing GitHub Actions secret(s): ${missing[*]}"
           fi
 
       - name: Decode release keystore when configured
@@ -144,6 +152,45 @@ jobs:
         run: |
           gradle --no-daemon --stacktrace :app:assembleRelease
 
+      - name: Assemble unsigned release variant for validation when signing is unavailable
+        if: ${{ steps.release_signing.outputs.configured != 'true' }}
+        working-directory: android
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Verify universal release APK and signing state
+        shell: bash
+        env:
+          RELEASE_SIGNED: ${{ steps.release_signing.outputs.configured }}
+        run: |
+          if [[ "$RELEASE_SIGNED" == "true" ]]; then
+            apk="android/app/build/outputs/apk/release/app-release.apk"
+          else
+            apk="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          fi
+          test -s "$apk" || { echo "::error::Expected release APK is missing: $apk"; exit 1; }
+          python3 - "$apk" <<'PYAPK'
+          import sys, zipfile
+          apk = sys.argv[1]
+          required = [
+              "lib/arm64-v8a/libsundown_core.so",
+              "lib/armeabi-v7a/libsundown_core.so",
+              "lib/x86_64/libsundown_core.so",
+          ]
+          with zipfile.ZipFile(apk) as archive:
+              names = set(archive.namelist())
+          missing = [name for name in required if name not in names]
+          if missing:
+              raise SystemExit("Universal APK is missing native ABI libraries: " + ", ".join(missing))
+          print("Universal APK contains arm64-v8a, armeabi-v7a and x86_64 Rust libraries.")
+          PYAPK
+          if [[ "$RELEASE_SIGNED" == "true" ]]; then
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$apk"
+            echo "Signed universal release APK signature verification passed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Unsigned release variant and ABI contents validated. No signed release artifact will be uploaded." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:
@@ -157,7 +204,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sundown-release-universal-apk-${{ github.sha }}
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
 

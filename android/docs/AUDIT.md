@@ -46,7 +46,7 @@ Grid: album tile (→ Album sheet) · artist tile (→ artist filter) · genre t
 Songs: sticky header (count + **Shuffle** button) · row tap (play / toggle
 pause when it is the current track) · row `+` (→ chooser).
 
-A–Z rail: 27 keys (A–Z, `#`) → jump-to-first-match, toast when no match.
+A–Z rail: 27 keys (A–Z, `#`) → tap or vertical drag to the first matching item; highlight follows the first visible letter. Empty-letter taps explain that there is no match; dragging over empty letters does not spam notices.
 
 Mini player: artwork (→ Now Playing) · meta (→ Now Playing) · prev · play/pause
 · next · progress scrub · (≥860 dp also: repeat, shuffle, volume, mute).
@@ -76,8 +76,8 @@ Notice toast: auto-dismiss 4.5 s + manual dismiss.
 
 `tracks`, `booted`, `tab`, `query`/`search`, `genre`, `artistFilter`,
 `favoritesOnly`, `favorites[]`, `playlists[]`, `defaultTab`, `autoRescan`,
-`showIndex`, `highArt`, `keepAwake`, `folderName`, `permission`
-(granted/prompt/none), `scanning` (phase/done/total/current), sheet-open flags,
+`showIndex`, `highArt`, `keepAwake`, `folderName`, live `permission`
+(granted/denied), internal one-time audio-permission prompt guard, `scanning` (phase/done/total/current), sheet-open flags,
 `notice`, and player snapshot (track, playing, loading, elapsed, duration,
 volume, muted, shuffle, repeat, queue, hasSource).
 
@@ -112,19 +112,20 @@ volume, muted, shuffle, repeat, queue, hasSource).
 |---|---|
 | File System Access prompt | `ACTION_OPEN_DOCUMENT_TREE` + persistable read permission |
 | File input fallback | `ACTION_OPEN_DOCUMENT` (multi-select) |
+| First launch device music | One-time `READ_MEDIA_AUDIO` (API 33+) or legacy `READ_EXTERNAL_STORAGE` (API 26–32); re-checks Android's current grant on resume and scans after grant |
 | Screen Wake Lock API | `FLAG_KEEP_SCREEN_ON` |
 | Media Session API | Media3 `MediaSessionService`; Android exempts media-session notifications from the API 33+ notification runtime-permission gate, so no `POST_NOTIFICATIONS` prompt is needed |
 | — | `FOREGROUND_SERVICE_MEDIA_PLAYBACK`; no Notification Listener access |
 
 ## 8. Error / empty / loading states
 
-- No library yet → empty state with “Choose Music Folder”.
+- No library yet with device-audio permission missing → explains the permission state and offers a direct grant action; SAF folder selection remains available through Sources. With permission granted, the normal “Choose Music Folder” empty state remains.
 - Search/filter with no match → “Nothing matches” + Show Everything.
 - Genres empty, Playlists empty-on-search.
 - Nothing playing (Now Playing sheet variant).
 - Unreadable/moved file → toast, playback stops cleanly.
 - Unsupported codec → toast.
-- Permission refused / revoked → “Restore Folder Access”.
+- Audio permission refused / revoked → no fabricated tracks; the empty state and Sources explain/retry device-audio access, and live permission state is re-checked. SAF access remains independent.
 - Loading: scan bar and transport/loading states; per-row spinner parity is not verified.
 
 ## 9. Deliberate behaviour preserved
@@ -136,9 +137,8 @@ exits. Drill-ins and sheets *do* push, newest-closes-first.
 
 ## 10. Audio
 
-Original file stream is played untouched — no transcode, resample, or
-normalisation. Web used `<audio>` + object URL; native uses ExoPlayer with the
-raw `content://` URI and the default (bit-perfect-passthrough-capable)
-AudioSink. Gapless-ish behaviour via ExoPlayer's playlist API. The Activity leaves
-`preferredRefreshRate` at 0 (no app-level cap); Compose remains vsync-driven so
-Android can use the display's available high-refresh mode.
+Media3 receives the original local `content://` URI; the app does not add a
+transcode, resample, or normalization path. Android's output pipeline and device
+behavior are not certified as bit-perfect. ExoPlayer's playlist API supplies the
+queue. The Activity leaves `preferredRefreshRate` at 0 (no hardcoded refresh
+mode); actual 90/120 Hz frame pacing remains unprofiled and unverified.

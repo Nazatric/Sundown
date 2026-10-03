@@ -42,6 +42,49 @@ import kotlinx.coroutines.sync.withPermit
 private val TABS = listOf("Artists", "Albums", "Songs", "Genres", "Playlists")
 private val ALPHABET = ('A'..'Z').map(Char::toString) + "#"
 
+/** Matches the Rust native sort key's leading-article rule and its ASCII A–Z index. */
+internal fun alphabetIndexKey(name: String): String {
+    val normalized = name.trim().lowercase().removePrefix("the ")
+    val first = normalized.firstOrNull() ?: return "#"
+    return if (first in 'a'..'z') first.uppercaseChar().toString() else "#"
+}
+
+private fun alphabetNames(state: LibraryUiState): List<String> = when (state.tab) {
+    LibraryTab.Albums -> state.albums.map(AlbumGroup::artist)
+    LibraryTab.Artists -> state.artists.map(ArtistGroup::name)
+    LibraryTab.Songs -> state.songs.map(TrackEntity::artist)
+    else -> emptyList()
+}
+
+private fun alphabetTargets(state: LibraryUiState): Map<String, Int> = buildMap {
+    alphabetNames(state).forEachIndexed { index, name ->
+        val letter = alphabetIndexKey(name)
+        if (letter !in this) put(letter, index)
+    }
+}
+
+private fun firstVisibleAlphabetLetter(
+    state: LibraryUiState,
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    songsState: androidx.compose.foundation.lazy.LazyListState,
+): String? {
+    val index = when (state.tab) {
+        LibraryTab.Songs -> songsState.layoutInfo.visibleItemsInfo
+            .asSequence()
+            .filter { it.index > 0 } // Ignore the sticky count/shuffle header.
+            .minOfOrNull { it.index - 1 }
+        LibraryTab.Albums, LibraryTab.Artists -> gridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
+        else -> null
+    } ?: return null
+    val name = when (state.tab) {
+        LibraryTab.Albums -> state.albums.getOrNull(index)?.artist
+        LibraryTab.Artists -> state.artists.getOrNull(index)?.name
+        LibraryTab.Songs -> state.songs.getOrNull(index)?.artist
+        else -> null
+    }
+    return name?.let(::alphabetIndexKey)
+}
+
 /**
  * The library surface: status strip, toolbar, optional scan/filter bars, the
  * active view, the A-Z rail and the bottom fade. Layout mirrors the CSS grid
@@ -56,6 +99,7 @@ fun LibraryScreen(
     onClearQuery: () -> Unit,
     onClearFilters: () -> Unit,
     onOpenSources: () -> Unit,
+    onGrantMediaAccess: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onNewPlaylist: () -> Unit,
@@ -79,6 +123,8 @@ fun LibraryScreen(
     val scope = rememberCoroutineScope()
     val gridState = rememberLazyGridState()
     val songsState = rememberLazyListState()
+    var currentLetter by remember { mutableStateOf<String?>(null) }
+    val indexTargets = remember(state.tab, state.albums, state.artists, state.songs) { alphabetTargets(state) }
     val artworkLoader = LocalArtworkLoader.current
     val visibleGridIndices by remember(gridState) {
         derivedStateOf { gridState.layoutInfo.visibleItemsInfo.mapTo(HashSet()) { it.index } }
@@ -147,6 +193,12 @@ fun LibraryScreen(
         else gridState.scrollToItem(0)
     }
 
+    LaunchedEffect(state.tab, state.albums, state.artists, state.songs) {
+        snapshotFlow { firstVisibleAlphabetLetter(state, gridState, songsState) }
+            .distinctUntilChanged()
+            .collect { currentLetter = it }
+    }
+
     Column(modifier.fillMaxSize()) {
         StatusStrip()
         LibraryToolbar(
@@ -181,14 +233,22 @@ fun LibraryScreen(
                 .background(P.Library),
         ) {
             when {
-                !state.hasLibrary && state.scan == null && state.booted -> EmptyState(
-                    icon = SIcon.Folder,
-                    title = "Your music, on your device",
-                    body = "Choose the folder where you keep your music. Songs are read straight from your storage - nothing is uploaded.",
-                    actionLabel = "Choose Music Folder",
-                    onAction = onChooseFolder,
-                    modifier = Modifier.align(Alignment.Center),
-                )
+                !state.hasLibrary && state.scan == null && state.booted -> {
+                    val needsMediaAccess = !state.mediaStorePermission
+                    EmptyState(
+                        icon = if (needsMediaAccess) SIcon.Library else SIcon.Folder,
+                        title = "Your music, on your device",
+                        body = if (needsMediaAccess) {
+                            "Allow device-music access to index local audio, or choose a folder in Sources. Your original files are never changed or uploaded."
+                        } else {
+                            "Choose the folder where you keep your music. Songs are read straight from your storage - nothing is uploaded."
+                        },
+                        actionLabel = if (needsMediaAccess) "Allow Device Music Access" else "Choose Music Folder",
+                        actionIcon = if (needsMediaAccess) SIcon.Library else SIcon.Folder,
+                        onAction = if (needsMediaAccess) onGrantMediaAccess else onChooseFolder,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
 
                 state.hasLibrary && state.tab == LibraryTab.Songs && state.songs.isEmpty() -> EmptyState(
                     icon = SIcon.Search,
@@ -368,25 +428,35 @@ fun LibraryScreen(
                 }
             }
 
-            val indexVisible = state.hasLibrary && state.prefs.showIndex &&
-                state.tab in listOf(LibraryTab.Albums, LibraryTab.Artists, LibraryTab.Songs)
+            val indexVisible = state.prefs.showIndex && when (state.tab) {
+                LibraryTab.Albums -> state.albums.isNotEmpty()
+                LibraryTab.Artists -> state.artists.isNotEmpty()
+                LibraryTab.Songs -> state.songs.isNotEmpty()
+                else -> false
+            }
             if (indexVisible) {
                 AlphabetIndex(
                     letters = ALPHABET,
+                    currentLetter = currentLetter,
                     wide = widthDp >= 640.dp,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .padding(end = if (widthDp >= 640.dp) D.indexRightWide else D.indexRight)
                         .fillMaxHeight(0.80f),
-                ) { letter ->
-                    scope.launch {
-                        val target = jumpTarget(state, letter)
-                        if (target == null) {
-                            onToast("Nothing starting with $letter.")
-                        } else if (state.tab == LibraryTab.Songs) {
-                            songsState.animateScrollToItem(target + 1) // +1 for the sticky header
-                        } else {
-                            gridState.animateScrollToItem(target)
+                ) { letter, isDrag ->
+                    val target = indexTargets[letter]
+                    if (target == null) {
+                        if (!isDrag) onToast("Nothing starting with $letter.")
+                    } else {
+                        currentLetter = letter
+                        scope.launch {
+                            if (state.tab == LibraryTab.Songs) {
+                                if (isDrag) songsState.scrollToItem(target + 1)
+                                else songsState.animateScrollToItem(target + 1) // +1 for sticky header
+                            } else {
+                                if (isDrag) gridState.scrollToItem(target)
+                                else gridState.animateScrollToItem(target)
+                            }
                         }
                     }
                 }
@@ -420,19 +490,6 @@ private suspend fun preloadArtwork(loader: ArtworkLoader, artIds: List<String>, 
             }
         }
     }.awaitAll()
-}
-
-private fun jumpTarget(state: LibraryUiState, letter: String): Int? {
-    fun matches(value: String): Boolean {
-        val first = value.trimStart().firstOrNull()?.lowercaseChar() ?: return false
-        return if (letter == "#") !first.isLetter() else first.toString() == letter.lowercase()
-    }
-    val index = when (state.tab) {
-        LibraryTab.Songs -> state.songs.indexOfFirst { matches(com.sundown.player.nativecore.SundownCore.sortName(it.artist)) }
-        LibraryTab.Artists -> state.artists.indexOfFirst { matches(com.sundown.player.nativecore.SundownCore.sortName(it.name)) }
-        else -> state.albums.indexOfFirst { matches(com.sundown.player.nativecore.SundownCore.sortName(it.artist)) }
-    }
-    return index.takeIf { it >= 0 }
 }
 
 fun TrackEntity.toRowModel() = SongRowModel(
@@ -543,7 +600,11 @@ private fun LibraryToolbar(
             }
             SegmentedControl(
                 TABS, selectedTab, Modifier.fillMaxWidth(),
-                fontSize = if (narrow) 11.5f else 13f, onSelect = onTab,
+                fontSize = if (narrow) 11.5f else 13f,
+                // Keep the full “Playlists” label inside the equal-width compact tabs;
+                // save space in the tab cell rather than shrinking the toolbar.
+                horizontalPadding = if (narrow) 2.dp else D.segmentPadH,
+                onSelect = onTab,
             )
         }
     }

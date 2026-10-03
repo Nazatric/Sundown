@@ -9,31 +9,39 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import com.sundown.player.data.media.MediaStoreSource
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.runtime.getValue
+import com.sundown.player.data.media.MediaStoreSource
 import com.sundown.player.ui.LibraryViewModel
 import com.sundown.player.ui.SundownRoot
 import com.sundown.player.ui.components.LocalArtworkLoader
-import androidx.compose.runtime.CompositionLocalProvider
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
     private var onTreePicked: ((Uri) -> Unit)? = null
     private var onFilesPicked: ((List<Uri>, Boolean) -> Unit)? = null
+    private var libraryViewModel: LibraryViewModel? = null
 
     private val pickTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let { onTreePicked?.invoke(it) }
     }
 
     private var permissionResult: ((Boolean) -> Unit)? = null
+    private var audioPermissionRequestInFlight = false
 
     private val requestAudioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        permissionResult?.invoke(granted)
+        audioPermissionRequestInFlight = false
+        val result = permissionResult
         permissionResult = null
+        libraryViewModel?.refreshMediaStorePermission(scanIfAlreadyGranted = granted)
+        result?.invoke(granted)
     }
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -61,10 +69,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val vm: LibraryViewModel = viewModel()
+            libraryViewModel = vm
             val state by vm.state.collectAsStateWithLifecycle()
             val playback by vm.playerState.collectAsStateWithLifecycle()
             val libraryPlayback by vm.libraryPlaybackState.collectAsStateWithLifecycle()
 
+            // The first launch asks for local audio access once. A denied request
+            // leaves the user in the real empty state and can be retried from Sources.
+            LaunchedEffect(state.booted) {
+                if (state.booted && vm.consumeStartupAudioPermissionPrompt()) {
+                    requestDeviceMusicAccess(vm)
+                }
+            }
 
             // Match the source setting: keep the display awake only while audio
             // is actually playing, and always release the flag on pause.
@@ -86,17 +102,7 @@ class MainActivity : ComponentActivity() {
                         runCatching { pickTree.launch(null) }
                             .onFailure { vm.toast("No file manager available to choose a folder.") }
                     },
-                    onGrantMediaAccess = {
-                        if (MediaStoreSource.hasReadPermission(this)) {
-                            vm.rescanDeviceMusic()
-                        } else {
-                            permissionResult = { granted ->
-                                if (granted) vm.rescanDeviceMusic() else vm.toast("Music library access was denied. You can grant it later in Android Settings.")
-                            }
-                            runCatching { requestAudioPermission.launch(MediaStoreSource.permissionForCurrentApi()) }
-                                .onFailure { vm.toast("Android could not request music library access.") }
-                        }
-                    },
+                    onGrantMediaAccess = { requestDeviceMusicAccess(vm) },
                     onPickFiles = {
                         onFilesPicked = { uris, persisted ->
                             vm.ingestFiles(uris)
@@ -112,10 +118,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestDeviceMusicAccess(vm: LibraryViewModel) {
+        if (MediaStoreSource.hasReadPermission(this)) {
+            vm.refreshMediaStorePermission(scanIfAlreadyGranted = true)
+            return
+        }
+        if (audioPermissionRequestInFlight) return
+
+        audioPermissionRequestInFlight = true
+        lifecycleScope.launch {
+            runCatching { vm.markAudioPermissionPrompted() }
+                .onFailure { vm.toast("Sundown could not save the permission-request state.") }
+            permissionResult = { granted ->
+                if (!granted) {
+                    vm.toast("Music library access was denied. You can grant it later in Android Settings or Sources.")
+                }
+            }
+            runCatching { requestAudioPermission.launch(MediaStoreSource.permissionForCurrentApi()) }
+                .onFailure {
+                    audioPermissionRequestInFlight = false
+                    permissionResult = null
+                    vm.toast("Android could not request music library access.")
+                }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Always query PackageManager again after returning from a permission
+        // dialog or Settings; the DataStore flag is only a prompt guard.
+        if (permissionResult == null) libraryViewModel?.refreshMediaStorePermission()
+    }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemStatusBar()
+        if (hasFocus) {
+            hideSystemStatusBar()
+            if (permissionResult == null) libraryViewModel?.refreshMediaStorePermission()
+        }
     }
 
     private fun hideSystemStatusBar() {

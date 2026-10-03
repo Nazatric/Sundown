@@ -72,6 +72,7 @@ fun SundownRoot(
                 onClearQuery = vm::clearQuery,
                 onClearFilters = vm::clearFilters,
                 onOpenSources = { nav.navigate(Route.Sources.path) },
+                onGrantMediaAccess = onGrantMediaAccess,
                 onOpenAlbum = { key -> nav.navigate(Route.Album.of(key)) },
                 onOpenPlaylist = { id -> nav.navigate(Route.Playlist.of(id)) },
                 onNewPlaylist = { nav.navigate(Route.newPlaylist()) },

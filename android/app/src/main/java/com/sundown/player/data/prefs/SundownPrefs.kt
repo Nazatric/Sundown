@@ -25,6 +25,8 @@ data class Prefs(
     val keepAwake: Boolean = false,
     val treeUri: String? = null,
     val treeName: String? = null,
+    /** Internal one-time startup prompt guard; actual permission is always re-checked with Android. */
+    val audioPermissionPrompted: Boolean = false,
 )
 
 class SundownPrefs(private val context: Context) {
@@ -44,6 +46,7 @@ class SundownPrefs(private val context: Context) {
         val keepAwake = booleanPreferencesKey("keepAwake")
         val treeUri = stringPreferencesKey("treeUri")
         val treeName = stringPreferencesKey("treeName")
+        val audioPermissionPrompted = booleanPreferencesKey("audioPermissionPrompted")
     }
 
     val flow: Flow<Prefs> = context.dataStore.data.map { p ->
@@ -63,6 +66,7 @@ class SundownPrefs(private val context: Context) {
             keepAwake = p[K.keepAwake] ?: false,
             treeUri = p[K.treeUri],
             treeName = p[K.treeName],
+            audioPermissionPrompted = p[K.audioPermissionPrompted] ?: false,
         )
     }
 
@@ -84,6 +88,7 @@ class SundownPrefs(private val context: Context) {
                 keepAwake = store[K.keepAwake] ?: false,
                 treeUri = store[K.treeUri],
                 treeName = store[K.treeName],
+                audioPermissionPrompted = store[K.audioPermissionPrompted] ?: false,
             )
             val next = block(current)
             store[K.volume] = next.volume
@@ -101,6 +106,7 @@ class SundownPrefs(private val context: Context) {
             store[K.keepAwake] = next.keepAwake
             next.treeUri?.let { store[K.treeUri] = it } ?: store.remove(K.treeUri)
             next.treeName?.let { store[K.treeName] = it } ?: store.remove(K.treeName)
+            store[K.audioPermissionPrompted] = next.audioPermissionPrompted
         }
     }
 }
