@@ -204,7 +204,7 @@ fun AlbumStack(
                         0.42f to Color.Transparent,
                         1.00f to Color.Transparent,
                         start = Offset.Zero,
-                        end = Offset(size.width, size.height),
+                        end = Offset(this.size.width, this.size.height),
                     ),
                 )
             }
