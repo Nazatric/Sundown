@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sundown</string>
+    <string name="app_brand">Sundown</string>
+
+    <string name="tab_artists">Artists</string>
+    <string name="tab_albums">Albums</string>
+    <string name="tab_songs">Songs</string>
+    <string name="tab_genres">Genres</string>
+    <string name="tab_playlists">Playlists</string>
+
+    <string name="sources">Sources</string>
+    <string name="search">Search</string>
+    <string name="shuffle">Shuffle</string>
+
+    <string name="empty_library_title">Your music, on your device</string>
+    <string name="empty_library_body">Choose the folder where you keep your music. Songs are read straight from your storage - nothing is uploaded.</string>
+    <string name="choose_music_folder">Choose Music Folder</string>
+
+    <string name="nothing_matches_title">Nothing matches</string>
+    <string name="nothing_matches_body">Try a different search, or clear the active filter.</string>
+    <string name="show_everything">Show Everything</string>
+
+    <string name="playback_channel_name">Playback</string>
+
+
+
+</resources>

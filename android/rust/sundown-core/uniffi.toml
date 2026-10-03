@@ -1,0 +1,5 @@
+[bindings.kotlin]
+# Keep the generated code in UniFFI's conventional namespace consumed by
+# com.sundown.player.nativecore.SundownCore.
+package_name = "uniffi.sundown_core"
+android = true

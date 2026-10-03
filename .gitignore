@@ -1,0 +1,17 @@
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+
+# Rust native core
+android/rust/**/target/
+android/app/src/main/jniLibs/**
+
+# Local tooling and generated artifacts
+.DS_Store
+*.log
+
+# Retained pre-extraction snapshot; do not add it as a competing native project.
+/.archive-sundown/

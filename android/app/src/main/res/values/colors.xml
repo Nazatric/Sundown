@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sundown palette — generated from the web asset kit. -->
+<resources>
+    <color name="sundown_library">#5C6770</color>
+    <color name="sundown_app_bg">#444F58</color>
+    <color name="sundown_player_top">#46525C</color>
+    <color name="sundown_player_bottom">#434D56</color>
+    <color name="sundown_ink">#F5F6F7</color>
+    <color name="sundown_ink_dim">#D0D9E1</color>
+    <color name="sundown_ink_faint">#B5BEC7</color>
+    <color name="sundown_silver_hi">#FBFDFF</color>
+    <color name="sundown_silver_mid">#D7E0E7</color>
+    <color name="sundown_silver_lo">#8E9CA7</color>
+    <color name="sundown_metal_hi">#89949D</color>
+    <color name="sundown_metal_mid">#72808B</color>
+    <color name="sundown_metal_lo">#586773</color>
+    <color name="sundown_accent">#238FC2</color>
+    <color name="sundown_accent_deep">#318CB7</color>
+    <color name="sundown_control_ink">#34424D</color>
+    <color name="sundown_track_playing">#1A5275</color>
+    <color name="sundown_eq_blue">#BDE7FF</color>
+    <color name="sundown_paper">#ECE7DC</color>
+    <color name="sundown_sleeve_edge">#323A40</color>
+    <color name="sundown_danger">#F0D4D4</color>
+</resources>

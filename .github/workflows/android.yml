@@ -1,0 +1,162 @@
+name: Android CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Rust tests and Android release APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      ANDROID_NDK_VERSION: 26.3.11579264
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK and NDK packages
+        shell: bash
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Set up Rust and Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android/rust/sundown-core -> target
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked || cargo install cargo-ndk
+
+      - name: Run Rust unit tests
+        shell: bash
+        run: |
+          set +e
+          cargo test --manifest-path android/rust/sundown-core/Cargo.toml 2>&1 | tee /tmp/sundown-rust-tests.log
+          test_exit=${PIPESTATUS[0]}
+          if [[ "$test_exit" -ne 0 ]]; then
+            summary="$(tail -n 20 /tmp/sundown-rust-tests.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Rust unit tests failed::$summary"
+            exit "$test_exit"
+          fi
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.9'
+
+      - name: Run Android unit tests
+        working-directory: android
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest 2>&1 | tee /tmp/sundown-android-tests.log
+          test_exit=${PIPESTATUS[0]}
+          if [[ "$test_exit" -ne 0 ]]; then
+            details="$(grep -Ei '(^e: |error:|what went wrong|execution failed for task|caused by:|unresolved reference|could not resolve|failed to transform)' /tmp/sundown-android-tests.log | tail -n 16)"
+            if [[ -z "$details" ]]; then details="$(tail -n 30 /tmp/sundown-android-tests.log)"; fi
+            summary="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Android unit tests failed::$summary"
+            exit "$test_exit"
+          fi
+
+      - name: Assemble debug APK
+        working-directory: android
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/sundown-android-build.log
+          build_exit=${PIPESTATUS[0]}
+          if [[ "$build_exit" -ne 0 ]]; then
+            summary="$(tail -n 20 /tmp/sundown-android-build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Debug APK assembly failed::$summary"
+            exit "$build_exit"
+          fi
+
+      - name: Decode release keystore when configured
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 --decode > android/app/release.keystore
+
+      - name: Assemble signed universal release APK
+        if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.KEYSTORE_PASSWORD != '' && secrets.KEY_ALIAS != '' && secrets.KEY_PASSWORD != '' }}
+        working-directory: android
+        env:
+          SUNDOWN_STORE_FILE: release.keystore
+          SUNDOWN_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SUNDOWN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SUNDOWN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: sundown-debug-apk-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload signed universal release APK
+        if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.KEYSTORE_PASSWORD != '' && secrets.KEY_ALIAS != '' && secrets.KEY_PASSWORD != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sundown-release-universal-apk-${{ github.sha }}
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove release keystore
+        if: always()
+        run: rm -f android/app/release.keystore
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-build-reports-${{ github.sha }}
+          path: |
+            android/app/build/reports/**
+            android/rust/sundown-core/target/**/build/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7

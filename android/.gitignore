@@ -1,0 +1,23 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Produced by cargo-ndk; rebuilt by CI.
+app/src/main/jniLibs/
+
+# Produced by uniffi-bindgen; rebuilt by CI.
+app/src/main/java/uniffi/
+
+# Rust build output
+rust/sundown-core/target/
+
+# Signing material must never be committed.
+*.keystore
+*.jks
+keystore.properties

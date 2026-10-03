@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      Edge-to-edge shell matching the web app's `viewport-fit=cover` +
+      fullscreen manifest display. Compose paints everything; this theme only
+      has to avoid a flash of the wrong colour and keep the bars transparent.
+    -->
+    <style name="Theme.Sundown" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/sundown_app_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
+    </style>
+
+    <!-- API 26–30 fallback for the Android 12 launch-theme resource. -->
+    <style name="Theme.Sundown.Launch" parent="Theme.Sundown" />
+</resources>
