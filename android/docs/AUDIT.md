@@ -2,7 +2,7 @@
 
 This document is a reference inventory of the existing screens and behaviors. The original web design is not shipped in this native-only repository, and this inventory is not a certification of visual parity.
 
-The current working source has not been Android/Rust built or device-tested in this environment. Older CI notes from other commits do not verify this revision. Mappings below describe intended native counterparts only; see `PARITY.md` and the root `NATIVE_VERIFICATION.md` for the current status.
+Implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5` passed Rust unit tests, Android unit tests and debug APK assembly in GitHub Actions run [37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273). No device or screenshot validation has been performed, so this inventory remains a source mapping rather than a parity certification. See `PARITY.md` and the root `NATIVE_VERIFICATION.md` for current status.
 
 ## 1. Screens / destinations
 

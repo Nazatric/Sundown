@@ -14,9 +14,9 @@ Status recorded 2026-10-04. The repository is Android-native and offline-only. T
 | Playback, queue, state restoration and notification artwork | PASS (source) | Media3 service/controller, checkpoint updates (including empty queues), artwork metadata path, and local wake mode reviewed; background/device behavior is UNVERIFIED. |
 | Artwork bounds, invalidation and caches | PASS (source) | Content-derived IDs, bounded previews, memory/disk cache limits and intentional-eviction markers reviewed; image quality and memory behavior are UNVERIFIED. |
 | Room, FTS5 and search | PASS (source) | Room 1→2 migration and incremental FTS5/fallback implementation reviewed. Host SQLite 3.40.1 FTS5 create/insert/update/delete/substring probe PASS; Android SQLite availability and large-library performance are UNVERIFIED. |
-| Release APK configuration | PASS (source) | ABI splits are disabled and optional environment/secret-based universal-APK signing is configured. A signed APK is BLOCKED by the missing build toolchain and signing material. |
+| Release APK configuration | PASS (source) | ABI splits are disabled and optional environment/secret-based universal-APK signing is configured. CI assembled/uploaded the debug APK; signed release packaging was skipped because signing secrets are not configured. |
 | iOS / IPA | BLOCKED / NOT APPLICABLE | No native iOS project exists, so no IPA was built or claimed. |
-| Android/Rust compilation and unit tests | BLOCKED | This environment has no JDK, Gradle distribution/wrapper, Android SDK/NDK, Rust/Cargo/cargo-ndk, Kotlin compiler, or adb. No Android/Rust build or unit-test run is claimed. |
+| Android/Rust compilation and unit tests | PASS (CI) / BLOCKED locally | GitHub Actions run [37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273) for implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5` passed Rust unit tests, Android unit tests, and debug APK assembly. This sandbox still lacks JDK, Gradle, Android SDK/NDK, Rust/Cargo/cargo-ndk, Kotlin compiler and adb. |
 | Device, screenshot and performance validation | UNVERIFIED | No emulator or physical Android device is available here. |
 
 ## Static checks completed
@@ -29,14 +29,8 @@ Status recorded 2026-10-04. The repository is Android-native and offline-only. T
 
 ## Not performed / not claimed
 
-No Kotlin or Rust compiler/parser, Gradle build, Rust unit-test run, Android unit-test run, APK assembly, emulator/device install, playback/SAF exercise, screenshot comparison, performance/memory benchmark, release signing, or IPA build was performed in this environment. Historical CI references from other commits are not evidence for the current revision.
+No local Kotlin or Rust compilation/test run, emulator/device install, playback/SAF exercise, screenshot comparison, performance/memory benchmark, signed release APK, or IPA build was performed in this sandbox. The linked CI run verifies the implementation commit's Rust tests, Android unit tests and debug APK assembly; it does not verify device behavior, visual parity, or release signing.
 
-## Toolchain-backed checks to run later
+## Follow-up device and release checks
 
-With JDK 17, Android SDK 34, NDK 26.3.11579264, Rust Android targets, and `cargo-ndk` installed:
-
-```text
-gradle :app:testDebugUnitTest :app:assembleDebug
-```
-
-Then install and exercise MediaStore/SAF permissions, metadata and artwork, MediaSession background playback, queue/process restoration, back/predictive back, system insets, and the UI at the documented viewport. Build a signed universal APK only when valid signing material is configured; do not build an IPA without a native iOS project.
+On a physical device or emulator, exercise API 32 and API 33+ permissions, SAF folder grants, MediaStore changes, selected-file URI grants, metadata/artwork, MediaSession background playback, queue/process restoration, back/predictive back and system insets. Compare screenshots at the documented viewport and profile a large local library. Build a signed universal APK only when valid signing material is configured; do not build an IPA without a native iOS project.

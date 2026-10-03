@@ -39,17 +39,17 @@ Tabs remain top-level rather than adding history entries. This describes source 
 | Repository/native-only/offline audit | PASS (source) | Tracked source inventory found no web runtime, network permission, SVG artwork assets, or iOS project. |
 | UI/UX lock | PASS (diff scope) | No screen, component, theme, typography, color, spacing, or navigation-layout files were changed. Screenshot/device parity is UNVERIFIED. |
 | MediaStore/SAF/permissions | PASS (source) | Implementations and permission branches inspected; device/provider behavior is UNVERIFIED. |
-| Incremental indexing, metadata, artwork, queue and state fixes | PASS (source) | Changes reviewed; Kotlin/Rust compilation and runtime behavior are UNVERIFIED. |
+| Incremental indexing, metadata, artwork, queue and state fixes | PASS (source / CI build) | Changes reviewed and the implementation commit compiled in CI; runtime behavior is UNVERIFIED. |
 | Room migration / FTS5 | PASS (source) | Migration and fallback paths inspected; Android SQLite/FTS availability and large-library performance are UNVERIFIED. |
 | XML/resource and diff checks | PASS | `NATIVE_VERIFICATION.md` records XML parsing, manifest, source-inventory and diff checks; these do not replace a build. |
-| Android/Rust build and unit-test execution | BLOCKED | This environment has no JDK, Gradle/wrapper, Android SDK/NDK, Rust/Cargo/cargo-ndk or Kotlin compiler. |
+| Android/Rust build and unit-test execution | PASS (CI) / BLOCKED locally | GitHub Actions run [37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273) passed Rust tests, Android unit tests and debug APK assembly for implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5`; local toolchain is unavailable. |
 | Device install, playback, notification, SAF, screenshots and performance | UNVERIFIED | No emulator or physical Android device is available here. |
-| Signed universal APK | BLOCKED | Build toolchain and signing material are unavailable; configuration alone is not an artifact. |
+| Signed universal APK | BLOCKED | CI assembled/uploaded the debug APK. Signed release packaging was skipped because signing secrets are not configured; no signed artifact is claimed. |
 | IPA | BLOCKED / NOT APPLICABLE | No genuine native iOS project is present. |
 
 Older CI run IDs or commit hashes documented by previous snapshots have intentionally been removed: they do not validate the current source revision.
 
-## Follow-up verification when toolchains/devices are available
+## Local reproduction and device validation still needed
 
 1. Run `gradle :app:testDebugUnitTest :app:assembleDebug` from `android/` with the documented JDK, SDK/NDK and Rust targets.
 2. Install the debug APK and exercise API 32 and API 33+ permissions, SAF folder grants, MediaStore changes, selected-file URI grants, metadata, queue restore, background playback and artwork notifications.
