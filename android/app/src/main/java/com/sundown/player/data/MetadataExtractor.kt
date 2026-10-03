@@ -115,7 +115,7 @@ class MetadataExtractor(private val context: Context) {
     private fun empty(title: String) = Result(title, "", "", "", "", 0, 0, 0, 0, null)
 
     private fun MediaMetadataRetriever.str(key: Int): String = runCatching { extractMetadata(key).orEmpty().trim() }.getOrDefault("")
-    private fun MediaMetadataRetriever.num(key: Int): Int = extractMetadata(key)?.substringBefore('/').toIntOrNull() ?: 0
+    private fun MediaMetadataRetriever.num(key: Int): Int = extractMetadata(key)?.substringBefore('/')?.toIntOrNull() ?: 0
     private fun MediaMetadataRetriever.numLong(key: Int): Long = extractMetadata(key)?.toLongOrNull() ?: 0L
 
     private companion object {
