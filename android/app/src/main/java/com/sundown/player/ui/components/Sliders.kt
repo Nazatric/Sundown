@@ -40,6 +40,7 @@ fun ProgressSlider(
 ) {
     var widthPx by remember { mutableIntStateOf(0) }
     var dragging by remember { mutableStateOf(false) }
+    var dragChanged by remember { mutableStateOf(false) }
     var previewActive by remember { mutableStateOf(false) }
     var previewRevision by remember { mutableIntStateOf(0) }
     var previewProgress by remember { mutableFloatStateOf(fraction.coerceIn(0f, 1f)) }
@@ -48,10 +49,14 @@ fun ProgressSlider(
     val latestClamped by rememberUpdatedState(clamped)
     val latestOnScrub by rememberUpdatedState(onScrub)
 
-    fun scrubTo(value: Float) {
+    fun previewTo(value: Float) {
         previewProgress = value.coerceIn(0f, 1f)
         previewActive = true
         previewRevision += 1
+    }
+
+    fun commitTo(value: Float) {
+        previewTo(value)
         latestOnScrub(previewProgress)
     }
 
@@ -83,19 +88,31 @@ fun ProgressSlider(
             .onSizeChanged { widthPx = it.width }
             .pointerInput(enabled, widthPx) {
                 if (!enabled || widthPx == 0) return@pointerInput
-                detectTapGestures { offset -> scrubTo(offset.x / widthPx) }
+                detectTapGestures { offset -> commitTo(offset.x / widthPx) }
             }
             .pointerInput(enabled, widthPx) {
                 if (!enabled || widthPx == 0) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragStart = {
                         dragging = true
+                        dragChanged = false
                         previewProgress = latestClamped
                         previewActive = false
                     },
-                    onDragEnd = { dragging = false },
-                    onDragCancel = { dragging = false },
-                    onHorizontalDrag = { change, _ -> scrubTo(change.position.x / widthPx) },
+                    onDragEnd = {
+                        dragging = false
+                        if (dragChanged) latestOnScrub(previewProgress)
+                        dragChanged = false
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragChanged = false
+                        previewActive = false
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        dragChanged = true
+                        previewTo(change.position.x / widthPx)
+                    },
                 )
             },
         contentAlignment = Alignment.CenterStart,

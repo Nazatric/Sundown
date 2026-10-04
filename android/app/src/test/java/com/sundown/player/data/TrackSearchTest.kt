@@ -44,13 +44,19 @@ class TrackSearchTest {
     }
 
     @Test
-    fun pendingIndexFallbackReturnsOnlyExactSubstringMatches() {
+    fun changedSearchFieldsRemainAvailableToExactFallback() {
         val updated = track.copy(title = "Morning Light")
-        val staleIndexedText = track.searchDocumentText()
 
-        assertTrue(updated.matchesPendingSearch(staleIndexedText, "morning li"))
-        assertFalse(updated.matchesPendingSearch(staleIndexedText, "missing phrase"))
-        assertFalse(track.matchesPendingSearch(track.searchDocumentText(), "evening"))
+        assertTrue(updated.matchesSearch("morning li"))
+        assertFalse(updated.matchesSearch("evening"))
+    }
+
+    @Test
+    fun ftsAccelerationRequiresTheExactSynchronizedLibrarySnapshot() {
+        val indexedSnapshot = listOf(track)
+
+        assertTrue(isSearchIndexSnapshotCurrent(indexedSnapshot, indexedSnapshot))
+        assertFalse(isSearchIndexSnapshotCurrent(indexedSnapshot, listOf(track)))
     }
 
     @Test

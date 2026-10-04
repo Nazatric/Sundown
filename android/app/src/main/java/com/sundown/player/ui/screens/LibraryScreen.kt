@@ -35,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -159,6 +160,8 @@ fun LibraryScreen(
                 else (first..last).flatMap { galleryArtwork.getOrNull(it)?.artIds.orEmpty() }.distinct()
             }
         }.distinctUntilChanged().collectLatest { artIds ->
+            // Let fast scrolls settle before prefetching covers that may already be off-screen.
+            delay(70)
             preloadArtwork(loader, artIds, small = !state.prefs.highArt)
         }
     }
@@ -176,6 +179,7 @@ fun LibraryScreen(
                 else (first..last).mapNotNull { state.songs.getOrNull(it - 1)?.artId }.distinct()
             }
         }.distinctUntilChanged().collectLatest { artIds ->
+            delay(70)
             preloadArtwork(loader, artIds, small = true)
         }
     }
@@ -521,7 +525,9 @@ private fun StatusStrip() {
         Modifier
             .fillMaxWidth()
             .background(P.StatusBg)
-            .windowInsetsPadding(WindowInsets.statusBars)
+            // The real status bar is immersive-hidden, so statusBars may be
+            // zero. Keep the strip behind the notch/camera safe area anyway.
+            .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout))
             .height(D.statusHeight),
     ) {
         val style = TextStyle(

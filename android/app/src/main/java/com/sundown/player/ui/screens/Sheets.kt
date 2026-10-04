@@ -1,7 +1,15 @@
 package com.sundown.player.ui.screens
 
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateEnterExit
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -21,6 +29,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -34,6 +45,9 @@ import com.sundown.player.ui.components.*
 import com.sundown.player.ui.icons.SIcon
 import com.sundown.player.ui.icons.SundownIcon
 import com.sundown.player.ui.theme.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 /**
  * `.sheet` — bottom-anchored panel with a dimmed, tap-to-dismiss scrim.
@@ -44,53 +58,160 @@ import com.sundown.player.ui.theme.*
  */
 @Composable
 fun SundownSheet(
-    onDismiss: () -> Unit,
+    onDismiss: () -> Boolean,
     modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit,
+    content: @Composable ColumnScope.(closeSheet: () -> Unit, closeSheetThen: (afterClose: () -> Unit) -> Unit) -> Unit,
 ) {
-    var visible by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { visible = true }
+    val visibility = remember { MutableTransitionState(false) }
+    val dismissRequested = remember { mutableStateOf(false) }
+    val dismissCompleted = remember { mutableStateOf(false) }
+    val afterDismiss = remember { mutableStateOf<(() -> Unit)?>(null) }
+    val backProgress = remember { Animatable(0f) }
+    val backGestureActive = remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val latestOnDismiss by rememberUpdatedState(onDismiss)
+
+    LaunchedEffect(visibility) { visibility.targetState = true }
+
+    val requestDismiss: ((() -> Unit)?) -> Unit = remember {
+        { afterClose: (() -> Unit)? ->
+            if (!dismissRequested.value) {
+                afterDismiss.value = afterClose
+                dismissRequested.value = true
+                backGestureActive.value = false
+                visibility.targetState = false
+            }
+        }
+    }
+    val closeSheet: () -> Unit = remember(requestDismiss) { { requestDismiss(null) } }
+    val closeSheetThen: (() -> Unit) -> Unit = remember(requestDismiss) {
+        { afterClose -> requestDismiss(afterClose) }
+    }
+
+    LaunchedEffect(
+        visibility.currentState,
+        visibility.targetState,
+        visibility.isIdle,
+        dismissRequested.value,
+    ) {
+        if (dismissRequested.value && visibility.isIdle && !visibility.currentState && !dismissCompleted.value) {
+            dismissCompleted.value = true
+            if (latestOnDismiss()) {
+                afterDismiss.value?.invoke()
+            } else {
+                dismissRequested.value = false
+                dismissCompleted.value = false
+                visibility.targetState = true
+            }
+        }
+    }
+
+    // Keep the handler scoped to the active sheet: a dialog still owns Back
+    // first, and Navigation Compose handles routes when no sheet is on top.
+    PredictiveBackHandler(enabled = true) { events ->
+        try {
+            events.collect { event ->
+                if (!dismissRequested.value) {
+                    backGestureActive.value = true
+                    backProgress.snapTo(event.progress.coerceIn(0f, 1f))
+                }
+            }
+            if (!dismissRequested.value) {
+                backGestureActive.value = true
+                backProgress.snapTo(1f)
+                if (latestOnDismiss()) {
+                    dismissRequested.value = true
+                    dismissCompleted.value = true
+                } else {
+                    scope.launch {
+                        backProgress.animateTo(0f, spring(stiffness = Spring.StiffnessMedium))
+                        backGestureActive.value = false
+                    }
+                }
+            }
+        } catch (_: CancellationException) {
+            if (!dismissRequested.value) {
+                scope.launch {
+                    backProgress.animateTo(0f, spring(stiffness = Spring.StiffnessMedium))
+                    backGestureActive.value = false
+                }
+            }
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
-        AnimatedVisibility(visible, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
-            val (scrimClick, _) = rippleless(onDismiss)
-            Box(Modifier.fillMaxSize().background(P.Scrim).then(scrimClick))
-        }
         AnimatedVisibility(
-            visible = visible,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = slideInVertically(
-                animationSpec = tween(260, easing = CubicBezierEasing(0.2f, 0.75f, 0.25f, 1f)),
-                initialOffsetY = { it / 4 },
-            ) + fadeIn(tween(160, easing = CubicBezierEasing(0.2f, 0.75f, 0.25f, 1f))),
-            exit = slideOutVertically(tween(180), targetOffsetY = { it / 4 }) + fadeOut(tween(140)),
+            visibleState = visibility,
+            enter = EnterTransition.None,
+            exit = ExitTransition.None,
         ) {
-            Column(
-                modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 780.dp)
-                    .cssShadow(Color(0x99000A15), blur = 50.dp, offsetY = (-10).dp, cornerRadius = D.sheetRadius)
-                    .clip(RoundedCornerShape(topStart = D.sheetRadius, topEnd = D.sheetRadius))
-                    .background(P.SheetBg)
-                    .border(
-                        1.dp, P.SheetBorder,
-                        RoundedCornerShape(topStart = D.sheetRadius, topEnd = D.sheetRadius),
-                    )
-                    // Keep sheet content clear of gesture navigation and the keyboard
-                    // while the panel surface remains edge-to-edge.
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .imePadding(),
-            ) {
+            Box(Modifier.fillMaxSize()) {
+                val (scrimClick, _) = rippleless(closeSheet, enabled = !dismissRequested.value)
                 Box(
                     Modifier
-                        .padding(top = 8.dp)
-                        .align(Alignment.CenterHorizontally)
-                        .size(D.sheetGrabW, D.sheetGrabH)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(P.SheetGrab),
+                        .fillMaxSize()
+                        .animateEnterExit(enter = fadeIn(tween(200)), exit = fadeOut(tween(150)))
+                        .graphicsLayer {
+                            alpha = if (backGestureActive.value) 1f - backProgress.value else 1f
+                        }
+                        .background(P.Scrim)
+                        .then(scrimClick),
                 )
-                content()
+                Column(
+                    modifier
+                        .align(Alignment.BottomCenter)
+                        .animateEnterExit(
+                            enter = slideInVertically(
+                                animationSpec = tween(260, easing = CubicBezierEasing(0.2f, 0.75f, 0.25f, 1f)),
+                                initialOffsetY = { it / 4 },
+                            ) + fadeIn(tween(160, easing = CubicBezierEasing(0.2f, 0.75f, 0.25f, 1f))),
+                            exit = slideOutVertically(tween(180), targetOffsetY = { it / 4 }) + fadeOut(tween(140)),
+                        )
+                        .graphicsLayer {
+                            if (backGestureActive.value) {
+                                translationY = backProgress.value * size.height
+                                alpha = 1f - backProgress.value
+                            } else {
+                                translationY = 0f
+                                alpha = 1f
+                            }
+                        }
+                        .fillMaxWidth()
+                        .heightIn(max = 780.dp)
+                        .cssShadow(Color(0x99000A15), blur = 50.dp, offsetY = (-10).dp, cornerRadius = D.sheetRadius)
+                        .clip(RoundedCornerShape(topStart = D.sheetRadius, topEnd = D.sheetRadius))
+                        .background(P.SheetBg)
+                        .border(
+                            1.dp, P.SheetBorder,
+                            RoundedCornerShape(topStart = D.sheetRadius, topEnd = D.sheetRadius),
+                        )
+                        // Keep sheet content clear of gesture navigation and the keyboard
+                        // while the panel surface remains edge-to-edge.
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .imePadding(),
+                ) {
+                    Box(
+                        Modifier
+                            .padding(top = 8.dp)
+                            .align(Alignment.CenterHorizontally)
+                            .size(D.sheetGrabW, D.sheetGrabH)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(P.SheetGrab),
+                    )
+                    content(closeSheet, closeSheetThen)
+                }
             }
+        }
+        if (dismissRequested.value) {
+            Box(
+                Modifier.fillMaxSize().pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                        }
+                    }
+                },
+            )
         }
     }
 }

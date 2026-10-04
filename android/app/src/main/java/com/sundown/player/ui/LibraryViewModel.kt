@@ -14,6 +14,7 @@ import com.sundown.player.data.db.TrackEntity
 import com.sundown.player.data.prefs.Prefs
 import com.sundown.player.data.prefs.SundownPrefs
 import com.sundown.player.nativecore.SundownCore
+import com.sundown.player.playback.PlaybackProgress
 import com.sundown.player.playback.PlayerController
 import com.sundown.player.playback.PlayerSnapshot
 import kotlinx.coroutines.CancellationException
@@ -115,6 +116,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val booted = MutableStateFlow(false)
 
     val playerState: StateFlow<PlayerSnapshot> get() = player.state
+    val playbackProgress: StateFlow<PlaybackProgress> get() = player.progress
+    val queueState: StateFlow<List<TrackEntity>> get() = player.queueState
 
     private data class UserFilters(
         val genre: String?,
@@ -139,6 +142,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private data class LibraryContent(
         val tracks: List<TrackEntity> = emptyList(),
+        val sortedTracks: List<TrackEntity> = emptyList(),
         val sessionTrackCount: Int = 0,
         val allAlbums: List<AlbumGroup> = emptyList(),
         val allAlbumsByKey: Map<String, AlbumGroup> = emptyMap(),
@@ -147,7 +151,29 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val genres: List<String> = emptyList(),
         val tracksById: Map<String, TrackEntity> = emptyMap(),
         val albumsByGenre: Map<String, List<AlbumGroup>> = emptyMap(),
-        val sortNameByTrackId: Map<String, String> = emptyMap(),
+    )
+
+    private data class SortableTrack(
+        val track: TrackEntity,
+        val artist: String,
+        val album: String,
+        val discNo: Int,
+        val trackNo: Int,
+        val title: String,
+    )
+
+    private data class PlaylistContent(
+        val playlists: List<PlaylistEntity> = emptyList(),
+        val trackIdsById: Map<String, List<String>> = emptyMap(),
+        val trackCountsById: Map<String, Int> = emptyMap(),
+        val trackIdSetsById: Map<String, Set<String>> = emptyMap(),
+    )
+
+    private data class PlaylistPresentation(
+        val playlists: List<PlaylistEntity> = emptyList(),
+        val trackCountsById: Map<String, Int> = emptyMap(),
+        val trackIdSetsById: Map<String, Set<String>> = emptyMap(),
+        val firstArtIdById: Map<String, String?> = emptyMap(),
     )
 
     private data class FilteredContent(
@@ -193,16 +219,54 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Room invalidations are the only inputs that rebuild grouping/sort indexes.
      * Progress, playback checkpoints and transient notices cannot redo this work.
+     * The FTS index is synchronized from this exact snapshot before it becomes
+     * visible to search, so fast queries can use FTS without an O(library-size)
+     * pending-row reconciliation on every keystroke.
      */
     private val libraryContent: StateFlow<LibraryContent> = repo.tracks
+        .distinctUntilChanged()
         // A media scan commits bounded batches. Collapse rapid Room invalidations
         // before rebuilding the full grouping/sort maps for a large library.
         .conflate()
         .debounce(160)
-        .map(::buildLibraryContent)
-        .distinctUntilChanged()
+        .map { tracks ->
+            withContext(Dispatchers.IO) { searchIndex.synchronize(tracks) }
+            buildLibraryContent(tracks)
+        }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, LibraryContent())
+
+    /** Parse serialized playlist IDs once per Room playlist snapshot, not per search keystroke. */
+    private val playlistContent: StateFlow<PlaylistContent> = repo.playlists
+        .distinctUntilChanged()
+        .map { playlists ->
+            val idsById = playlists.associate { playlist -> playlist.id to playlist.ids() }
+            PlaylistContent(
+                playlists = playlists,
+                trackIdsById = idsById,
+                trackCountsById = idsById.mapValues { (_, ids) -> ids.size },
+                trackIdSetsById = idsById.mapValues { (_, ids) -> ids.toHashSet() },
+            )
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlaylistContent())
+
+    /** Resolve cover references only when Room tracks or playlist data actually changes. */
+    private val playlistPresentation: StateFlow<PlaylistPresentation> = combine(
+        playlistContent,
+        libraryContent.map { it.tracksById }.distinctUntilChanged(),
+    ) { playlists, tracksById ->
+        PlaylistPresentation(
+            playlists = playlists.playlists,
+            trackCountsById = playlists.trackCountsById,
+            trackIdSetsById = playlists.trackIdSetsById,
+            firstArtIdById = playlists.trackIdsById.mapValues { (_, ids) ->
+                ids.firstNotNullOfOrNull { tracksById[it]?.artId }
+            },
+        )
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlaylistPresentation())
 
     /** Checkpoint writes update playback fields every couple seconds; the UI state
      * intentionally projects those out so only actual UI preferences invalidate it. */
@@ -226,18 +290,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val filteredContent: StateFlow<FilteredContent> = combine(
         libraryContent,
-        repo.playlists,
+        playlistPresentation,
         contentFilters,
         favoriteSet,
     ) { library, playlists, filters, favorites ->
-        val visiblePlaylists = if (filters.search.isBlank()) playlists
-            else playlists.filter { it.name.contains(filters.search, ignoreCase = true) }
-        val playlistTrackIdsById = visiblePlaylists.associate { playlist -> playlist.id to playlist.ids() }
-        val playlistTrackCountsById = playlistTrackIdsById.mapValues { (_, ids) -> ids.size }
-        val playlistTrackIdSetsById = playlistTrackIdsById.mapValues { (_, ids) -> ids.toHashSet() }
-        val playlistFirstArtIdById = playlistTrackIdsById.mapValues { (_, ids) ->
-            ids.firstNotNullOfOrNull { library.tracksById[it]?.artId }
-        }
+        // Search touches only playlist names. Serialized track IDs, membership
+        // sets, counts and artwork picks are cached per Room snapshot above.
+        val visiblePlaylists = if (filters.search.isBlank()) playlists.playlists
+            else playlists.playlists.filter { it.name.contains(filters.search, ignoreCase = true) }
         FilteredContent(
             tracks = library.tracks,
             sessionTrackCount = library.sessionTrackCount,
@@ -251,12 +311,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 else library.genres.filter { it.contains(filters.search, ignoreCase = true) },
             tracksById = library.tracksById,
             albumsByGenre = library.albumsByGenre,
-            songs = filterSongs(library.tracks, filters, favorites, library.sortNameByTrackId),
+            songs = filterSongs(library.sortedTracks, library.tracks, filters, favorites),
             playlists = visiblePlaylists,
             playlistsById = visiblePlaylists.associateBy(PlaylistEntity::id),
-            playlistTrackCountsById = playlistTrackCountsById,
-            playlistTrackIdSetsById = playlistTrackIdSetsById,
-            playlistFirstArtIdById = playlistFirstArtIdById,
+            playlistTrackCountsById = playlists.trackCountsById,
+            playlistTrackIdSetsById = playlists.trackIdSetsById,
+            playlistFirstArtIdById = playlists.firstArtIdById,
             favorites = favorites,
         )
     }
@@ -302,12 +362,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repo.messages.collect { message -> toast(message) }
         }
-        // SQLite work and index diffing must stay off the main thread. The
-        // index itself applies only changed rows, even though Room emits a full
-        // library snapshot after each committed scan batch.
-        viewModelScope.launch(Dispatchers.IO) {
-            repo.tracks.debounce(160).collect { tracks -> searchIndex.synchronize(tracks) }
-        }
         viewModelScope.launch {
             repo.mediaStoreChanges
                 .debounce(750)
@@ -344,7 +398,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         player.beginQueueRestoration()
         player.onError = ::toast
         player.onDurationResolved = { id, seconds ->
-            viewModelScope.launch { runCatching { repo.updateDuration(id, seconds) } }
+            viewModelScope.launch {
+                try {
+                    repo.updateDuration(id, seconds)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // A duration refresh is opportunistic; a failed write is retried on a later scan.
+                }
+            }
         }
         player.connect {
             viewModelScope.launch { restorePlayback() }
@@ -354,8 +416,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // is visible, persist a checkpoint so process death resumes near the
         // last position rather than at the beginning of a track.
         viewModelScope.launch {
-            player.state.sample(2_000).collect { snapshot ->
-                if (snapshot.hasSource) persistSnapshot(snapshot)
+            player.progress.sample(2_000).collect { progress ->
+                val snapshot = player.state.value
+                if (snapshot.hasSource) persistSnapshot(snapshot, progress)
             }
         }
     }
@@ -399,9 +462,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             .map(TrackEntity::artist)
             .distinct()
             .associateWith(::sortName)
+        val sortNameByTrackId = tracks.associate { it.id to (trackSortNames[it.artist] ?: "") }
+        // The Songs tab has a fixed order. Sort once per Room snapshot rather
+        // than re-running an O(n log n) comparator on every search keystroke.
+        val sortedTracks = tracks.map { track ->
+            SortableTrack(
+                track = track,
+                artist = sortNameByTrackId[track.id].orEmpty(),
+                album = track.album.lowercase(),
+                discNo = track.discNo,
+                trackNo = track.trackNo,
+                title = track.title.lowercase(),
+            )
+        }.sortedWith(compareBy<SortableTrack>({ it.artist }, { it.album }, { it.discNo }, { it.trackNo }, { it.title }))
+            .map(SortableTrack::track)
 
         return LibraryContent(
             tracks = tracks,
+            sortedTracks = sortedTracks,
             // Sources must not walk the full library on the main thread just to
             // count individually selected files every time its sheet recomposes.
             sessionTrackCount = tracks.count { it.source == LibraryRepository.SOURCE_FILE },
@@ -412,7 +490,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             genres = genres,
             tracksById = tracks.associateBy(TrackEntity::id),
             albumsByGenre = allAlbums.filter { it.genre.isNotBlank() }.groupBy(AlbumGroup::genre),
-            sortNameByTrackId = tracks.associate { it.id to (trackSortNames[it.artist] ?: sortName(it.artist)) },
         )
     }
 
@@ -463,27 +540,21 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun filterSongs(
-        tracks: List<TrackEntity>,
+        sortedTracks: List<TrackEntity>,
+        searchSnapshot: List<TrackEntity>,
         filter: ContentFilters,
         favorites: Set<String>,
-        sortNameByTrackId: Map<String, String>,
-    ) = run {
-        val ftsIds = if (filter.search.isBlank()) null else searchIndex.search(filter.search, tracks)
-        tracks.filter { track ->
+    ): List<TrackEntity> {
+        val ftsIds = if (filter.search.isBlank()) null else searchIndex.search(filter.search, searchSnapshot)
+        // sortedTracks preserves the library's stable sort order, so filtering
+        // is linear and does not re-sort the full result on every query change.
+        return sortedTracks.filter { track ->
             (filter.artist == null || track.artistKey == filter.artist) &&
                 (filter.genre == null || track.genre == filter.genre) &&
                 (!filter.favoritesOnly || track.albumKey in favorites) &&
                 (filter.search.isBlank() ||
                     ((ftsIds == null || track.id in ftsIds) && track.matchesSearch(filter.search)))
-        }.sortedWith(
-            compareBy(
-                { sortNameByTrackId[it.id].orEmpty() },
-                { it.album.lowercase() },
-                { it.discNo },
-                { it.trackNo },
-                { it.title.lowercase() },
-            ),
-        )
+        }
     }
 
     // ---- UI intents ---------------------------------------------------------
@@ -558,12 +629,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         persistSnapshot(player.state.value)
     }
 
-    private suspend fun persistSnapshot(snapshot: PlayerSnapshot) {
+    private suspend fun persistSnapshot(
+        snapshot: PlayerSnapshot,
+        progress: PlaybackProgress = player.progress.value,
+    ) {
+        val queueIds = player.queueIds()
         prefsStore.update { current ->
             current.copy(
-                queue = snapshot.queueIds,
+                queue = queueIds,
                 currentId = snapshot.trackId,
-                position = snapshot.elapsedMs.coerceAtLeast(0L),
+                position = progress.elapsedMs.coerceAtLeast(0L),
                 volume = if (snapshot.muted) current.volume else snapshot.volume,
                 muted = snapshot.muted,
                 shuffle = snapshot.shuffle,

@@ -23,6 +23,7 @@ import com.sundown.player.data.media.MediaStoreSource
 import com.sundown.player.ui.LibraryViewModel
 import com.sundown.player.ui.SundownRoot
 import com.sundown.player.ui.components.LocalArtworkLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
             libraryViewModel = vm
             val state by vm.state.collectAsStateWithLifecycle()
             val playback by vm.playerState.collectAsStateWithLifecycle()
+            val playbackProgress = vm.playbackProgress
             val libraryPlayback by vm.libraryPlaybackState.collectAsStateWithLifecycle()
 
             // The first launch asks for local audio access once. A denied request
@@ -98,6 +100,7 @@ class MainActivity : ComponentActivity() {
                     vm = vm,
                     state = state,
                     playback = playback,
+                    playbackProgress = playbackProgress,
                     libraryPlayback = libraryPlayback,
                     onPickFolder = {
                         onTreePicked = { uri -> vm.connectFolder(uri); Unit }
@@ -129,8 +132,14 @@ class MainActivity : ComponentActivity() {
 
         audioPermissionRequestInFlight = true
         lifecycleScope.launch {
-            runCatching { vm.markAudioPermissionPrompted() }
-                .onFailure { vm.toast("Sundown could not save the permission-request state.") }
+            try {
+                vm.markAudioPermissionPrompted()
+            } catch (cancelled: CancellationException) {
+                audioPermissionRequestInFlight = false
+                throw cancelled
+            } catch (_: Exception) {
+                vm.toast("Sundown could not save the permission-request state.")
+            }
             permissionResult = { granted ->
                 if (!granted) {
                     vm.toast("Music library access was denied. You can grant it later in Android Settings or Sources.")

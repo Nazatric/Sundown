@@ -39,6 +39,8 @@ class MediaStoreSource(private val context: Context) {
         val changedTracks: List<Found>,
         /** ID-only snapshots detect deletions without reopening unchanged audio files. */
         val currentIds: Set<String>,
+        /** Only IDs from these mounted volumes may be removed from the cached library. */
+        val scannedVolumes: Set<String>,
         /** Successful version/generation checkpoints, keyed by mounted MediaStore volume name. */
         val checkpoints: Map<String, MediaStoreCheckpoint>,
     )
@@ -116,7 +118,7 @@ class MediaStoreSource(private val context: Context) {
             }
         }
         onProgress(currentIds.size)
-        ScanSnapshot(changed, currentIds, checkpoints)
+        ScanSnapshot(changed, currentIds, volumes.toSet(), checkpoints)
     }
 
     private fun externalVolumes(): List<String> {

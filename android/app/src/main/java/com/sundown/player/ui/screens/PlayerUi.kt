@@ -22,7 +22,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sundown.player.playback.PlaybackProgress
 import com.sundown.player.playback.PlayerSnapshot
+import kotlinx.coroutines.flow.StateFlow
 import com.sundown.player.ui.components.*
 import com.sundown.player.ui.icons.SIcon
 import com.sundown.player.ui.theme.*
@@ -65,13 +68,18 @@ fun TransportRow(
 @Composable
 fun Timeline(
     snapshot: PlayerSnapshot,
+    progress: StateFlow<PlaybackProgress>,
     modifier: Modifier = Modifier,
     onScrub: (Float) -> Unit,
 ) {
-    val duration = snapshot.durationMs
-    val fraction = if (duration > 0) snapshot.elapsedMs.toFloat() / duration else 0f
-    val elapsedLabel = formatDuration(snapshot.elapsedMs)
-    val remainingLabel = if (duration > 0) "-" + formatDuration(duration - snapshot.elapsedMs) else "-:--"
+    // Only this narrow subtree observes 250 ms position updates; the library,
+    // artwork and navigation shell remain skipped while a track advances.
+    val playhead by progress.collectAsStateWithLifecycle()
+    val duration = playhead.durationMs
+    val elapsed = playhead.elapsedMs
+    val fraction = if (duration > 0) elapsed.toFloat() / duration else 0f
+    val elapsedLabel = formatDuration(elapsed)
+    val remainingLabel = if (duration > 0) "-" + formatDuration(duration - elapsed) else "-:--"
     val style = TextStyle(
         color = Color(0xFFD3DBE1), fontSize = 11.5f.cssSp, fontFamily = SundownFontFamily,
         shadow = Shadow(Color(0xFF27323B), Offset(0f, -1f), 1f),
@@ -111,6 +119,7 @@ fun Timeline(
 @Composable
 fun MiniPlayer(
     snapshot: PlayerSnapshot,
+    progress: StateFlow<PlaybackProgress>,
     modifier: Modifier = Modifier,
     onOpenNowPlaying: () -> Unit,
     onPrevious: () -> Unit,
@@ -209,7 +218,7 @@ fun MiniPlayer(
                 )
             }
         }
-        Timeline(snapshot, Modifier.fillMaxWidth(), onScrub = onScrub)
+        Timeline(snapshot, progress, Modifier.fillMaxWidth(), onScrub = onScrub)
     }
 }
 
@@ -234,6 +243,7 @@ private fun NowPlayingPulse(modifier: Modifier = Modifier) {
 @Composable
 fun NowPlayingContent(
     snapshot: PlayerSnapshot,
+    progress: StateFlow<PlaybackProgress>,
     modifier: Modifier = Modifier,
     onOpenAlbum: () -> Unit,
     onOpenQueue: () -> Unit,
@@ -340,7 +350,7 @@ fun NowPlayingContent(
             }
         }
 
-        Timeline(snapshot, Modifier.fillMaxWidth(), onScrub = onScrub)
+        Timeline(snapshot, progress, Modifier.fillMaxWidth(), onScrub = onScrub)
         TransportRow(snapshot, big = true, onPrevious = onPrevious, onToggle = onToggle, onNext = onNext)
 
         Row(

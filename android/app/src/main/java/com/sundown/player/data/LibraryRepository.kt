@@ -13,6 +13,8 @@ import com.sundown.player.data.prefs.Prefs
 import com.sundown.player.data.prefs.SundownPrefs
 import com.sundown.player.data.saf.SafSource
 import com.sundown.player.data.media.MediaStoreSource
+import com.sundown.player.data.media.mergeMediaStoreCheckpoints
+import com.sundown.player.data.media.removedMediaStoreIds
 import com.sundown.player.nativecore.SundownCore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -168,7 +170,8 @@ class LibraryRepository(
         var completed = false
         try {
             _progress.value = ScanProgress("reading", 0, 0, "Device Music")
-            val snapshot = mediaStore.scan(prefs.mediaStoreCheckpoints()) { count ->
+            val previousCheckpoints = prefs.mediaStoreCheckpoints()
+            val snapshot = mediaStore.scan(previousCheckpoints) { count ->
                 _progress.value = ScanProgress("reading", count, 0, "Device Music")
             }
             val found = snapshot.changedTracks.map { f ->
@@ -185,10 +188,13 @@ class LibraryRepository(
             val known = dao.fingerprints(SOURCE_MEDIA).associateBy { it.id }
             val toParse = found.filter { file -> requiresParse(file, known[file.id]) }
             val result = parseAll(toParse, source = SOURCE_MEDIA)
-            val removed = known.keys.filter { it !in snapshot.currentIds }
+            // An absent removable volume is not evidence that its files were deleted.
+            val removed = removedMediaStoreIds(known.keys, snapshot.currentIds, snapshot.scannedVolumes)
             if (result.failed == 0) {
                 deleteIds(removed)
-                prefs.setMediaStoreCheckpoints(snapshot.checkpoints)
+                prefs.setMediaStoreCheckpoints(
+                    mergeMediaStoreCheckpoints(previousCheckpoints, snapshot.scannedVolumes, snapshot.checkpoints),
+                )
                 completed = true
                 pruneArtworkSafely()
             }

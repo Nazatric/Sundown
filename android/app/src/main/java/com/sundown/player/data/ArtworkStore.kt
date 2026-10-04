@@ -9,10 +9,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import com.sundown.player.ui.components.ArtworkLoader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -28,7 +31,25 @@ class ArtworkStore(context: Context) : ArtworkLoader {
     @Volatile private var missingArtworkProvider: (suspend (String, Boolean) -> ByteArray?)? = null
     // Bound concurrent bitmap decoding across visible and prefetched artwork.
     private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(2))
-    private val inFlight = ConcurrentHashMap<String, Deferred<ImageBitmap?>>()
+
+    private class ArtworkFlight(val task: Deferred<ImageBitmap?>) {
+        private var waiters = 0
+
+        @Synchronized
+        fun acquire(): Boolean {
+            if (task.isCompleted || task.isCancelled) return false
+            waiters += 1
+            return true
+        }
+
+        @Synchronized
+        fun release() {
+            if (waiters > 0) waiters -= 1
+            if (waiters == 0 && !task.isCompleted) task.cancel()
+        }
+    }
+
+    private val inFlight = ConcurrentHashMap<String, ArtworkFlight>()
     private val cache = object : LruCache<String, ImageBitmap>(cacheCapacityBytes()) {
         override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4
     }
@@ -62,6 +83,8 @@ class ArtworkStore(context: Context) : ArtworkLoader {
             cache.remove("l:$artId")
             cache.remove("s:$artId")
             true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             false
         }
@@ -88,11 +111,16 @@ class ArtworkStore(context: Context) : ArtworkLoader {
 
     /** Removes orphaned covers and caps the on-disk cache, oldest artwork first. */
     suspend fun prune(referencedArtIds: Set<String>) = withContext(Dispatchers.IO) {
+        val coroutineContext = currentCoroutineContext()
         val files = dir.listFiles()?.toList().orEmpty()
-        files.filter { it.name.endsWith(".tmp") }.forEach { it.delete() }
+        files.filter { it.name.endsWith(".tmp") }.forEach {
+            coroutineContext.ensureActive()
+            it.delete()
+        }
 
         val referenced = referencedArtIds.mapTo(HashSet(), ::safeId)
         files.filter { it.name.endsWith(".evicted") }.forEach { marker ->
+            coroutineContext.ensureActive()
             if (marker.name.removeSuffix(".evicted") !in referenced) marker.delete()
         }
         val groups = files.mapNotNull { file ->
@@ -103,6 +131,7 @@ class ArtworkStore(context: Context) : ArtworkLoader {
         var totalBytes = groups.values.sumOf { group -> group.sumOf { it.length() } }
 
         groups.forEach { (id, group) ->
+            coroutineContext.ensureActive()
             if (id !in referenced) {
                 val groupBytes = group.sumOf { it.length() }
                 group.forEach { it.delete() }
@@ -117,6 +146,7 @@ class ArtworkStore(context: Context) : ArtworkLoader {
                 .filter { (id, _) -> id in referenced }
                 .sortedBy { (_, group) -> group.maxOfOrNull { it.lastModified() } ?: 0L }
                 .forEach { (id, group) ->
+                    coroutineContext.ensureActive()
                     if (totalBytes > MAX_DISK_CACHE_BYTES) {
                         val groupBytes = group.sumOf { it.length() }
                         group.forEach { it.delete() }
@@ -137,18 +167,29 @@ class ArtworkStore(context: Context) : ArtworkLoader {
 
         val cacheGeneration = generation.get()
         val flightKey = "$cacheGeneration:$cacheKey"
-        val task = inFlight.computeIfAbsent(flightKey) {
-            loadScope.async {
-                val restored = restoredArtworkBytes(artId, small)
-                restored?.let { decodeBytes(it, cacheKey, cacheGeneration) }
-                    ?: decode(artId, small, cacheKey, cacheGeneration)
+        var created = false
+        val flight = inFlight.compute(flightKey) { _, existing ->
+            if (existing != null && existing.acquire()) {
+                existing
+            } else {
+                created = true
+                val task = loadScope.async(start = CoroutineStart.LAZY) {
+                    val restored = restoredArtworkBytes(artId, small)
+                    restored?.let { decodeBytes(it, cacheKey, cacheGeneration) }
+                        ?: decode(artId, small, cacheKey, cacheGeneration)
+                }
+                ArtworkFlight(task).also { check(it.acquire()) }
             }
         }
-        task.invokeOnCompletion { inFlight.remove(flightKey, task) }
+        if (created) {
+            flight.task.invokeOnCompletion { inFlight.remove(flightKey, flight) }
+            flight.task.start()
+        }
         return try {
-            task.await()
+            flight.task.await()
         } finally {
-            if (task.isCompleted) inFlight.remove(flightKey, task)
+            flight.release()
+            if (flight.task.isCompleted) inFlight.remove(flightKey, flight)
         }
     }
 

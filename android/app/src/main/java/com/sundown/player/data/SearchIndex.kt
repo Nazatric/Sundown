@@ -5,6 +5,8 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import com.sundown.player.data.db.TrackEntity
 import java.io.Closeable
+import java.security.MessageDigest
+import java.util.Base64
 
 /** Optional FTS5 substring-search accelerator. Callers retain the normal Kotlin fallback. */
 class SearchIndex(context: Context) : Closeable {
@@ -14,7 +16,10 @@ class SearchIndex(context: Context) : Closeable {
     private var initializationAttempted = false
     private var supported = false
     private var ready = false
-    private var documents: Map<String, String>? = null
+    // Keep fixed-size fingerprints instead of duplicating every full search document in heap.
+    private var documentFingerprints: Map<String, String>? = null
+    /** Exact Room list instance whose documents have reached the FTS transaction. */
+    private var synchronizedTracks: List<TrackEntity>? = null
 
     /**
      * Incrementally syncs only changed search documents and removed IDs.
@@ -23,28 +28,37 @@ class SearchIndex(context: Context) : Closeable {
      */
     @Synchronized
     fun synchronize(tracks: List<TrackEntity>) {
-        val db = openDatabase() ?: return
-        val previous = documents ?: run {
+        val db = openDatabase() ?: run {
             ready = false
+            synchronizedTracks = null
+            return
+        }
+        val previous = documentFingerprints ?: run {
+            ready = false
+            synchronizedTracks = null
             return
         }
         val current = HashMap<String, String>(tracks.size)
         val changed = ArrayList<SearchDocument>()
+        val digest = MessageDigest.getInstance("SHA-256")
 
         tracks.forEach { track ->
             val text = track.searchDocumentText()
-            current[track.id] = text
-            if (previous[track.id] != text) changed += SearchDocument(track.id, text)
+            val fingerprint = fingerprint(digest, text)
+            current[track.id] = fingerprint
+            if (previous[track.id] != fingerprint) changed += SearchDocument(track.id, text)
         }
         val removed = previous.keys.filterNot { current.containsKey(it) }
 
         if (changed.isEmpty() && removed.isEmpty()) {
-            documents = current
+            documentFingerprints = current
             ready = true
+            synchronizedTracks = tracks
             return
         }
 
         ready = false
+        synchronizedTracks = null
         var transactionStarted = false
         var transactionSuccessful = false
         try {
@@ -74,8 +88,9 @@ class SearchIndex(context: Context) : Closeable {
             }
         }
         if (transactionSuccessful) {
-            documents = current
+            documentFingerprints = current
             ready = true
+            synchronizedTracks = tracks
         }
     }
 
@@ -87,13 +102,12 @@ class SearchIndex(context: Context) : Closeable {
      */
     @Synchronized
     fun search(query: String, tracks: List<TrackEntity>): Set<String>? {
-        if (!ready || !canAccelerate(query)) return null
+        if (!ready || !canAccelerate(query) || !isSearchIndexSnapshotCurrent(synchronizedTracks, tracks)) return null
         val db = openDatabase() ?: return null
         if (!supported) return null
-        val indexedDocuments = documents ?: return null
         val match = "\"${query.replace("\"", "\"\"")}\""
 
-        val matches = runCatching {
+        return runCatching {
             db.rawQuery(
                 "SELECT search_documents.id " +
                     "FROM track_fts JOIN search_documents " +
@@ -106,16 +120,7 @@ class SearchIndex(context: Context) : Closeable {
                     while (cursor.moveToNext()) add(cursor.getString(idColumn))
                 }
             }
-        }.getOrNull() ?: return null
-
-        // Room and this optional index observe separate flows. Include tracks
-        // whose documents have not reached SQLite yet to avoid transient false
-        // negatives during a scan/update race.
-        val notYetIndexed = tracks.asSequence()
-            .filter { it.matchesPendingSearch(indexedDocuments[it.id], query) }
-            .map(TrackEntity::id)
-            .toSet()
-        return if (notYetIndexed.isEmpty()) matches else matches + notYetIndexed
+        }.getOrNull()
     }
 
     @Synchronized
@@ -125,7 +130,8 @@ class SearchIndex(context: Context) : Closeable {
     override fun close() {
         runCatching { database?.close() }
         database = null
-        documents = null
+        documentFingerprints = null
+        synchronizedTracks = null
         ready = false
         supported = false
         initializationAttempted = false
@@ -187,34 +193,40 @@ class SearchIndex(context: Context) : Closeable {
         }
         if (!transactionSuccessful) {
             supported = false
-            documents = null
+            documentFingerprints = null
             runCatching { db.close() }
             database = null
             return null
         }
 
-        val loadedDocuments = readDocuments(db)
-        if (loadedDocuments == null) {
+        val loadedFingerprints = readDocumentFingerprints(db)
+        if (loadedFingerprints == null) {
             supported = false
             runCatching { db.close() }
             database = null
             return null
         }
         supported = true
-        documents = loadedDocuments
+        documentFingerprints = loadedFingerprints
         return db
     }
 
-    private fun readDocuments(db: SQLiteDatabase): Map<String, String>? =
+    private fun readDocumentFingerprints(db: SQLiteDatabase): Map<String, String>? =
         runCatching {
+            val digest = MessageDigest.getInstance("SHA-256")
             db.rawQuery("SELECT id, text FROM search_documents", null).use { cursor ->
                 buildMap(cursor.count) {
                     val idColumn = cursor.getColumnIndexOrThrow("id")
                     val textColumn = cursor.getColumnIndexOrThrow("text")
-                    while (cursor.moveToNext()) put(cursor.getString(idColumn), cursor.getString(textColumn))
+                    while (cursor.moveToNext()) {
+                        put(cursor.getString(idColumn), fingerprint(digest, cursor.getString(textColumn)))
+                    }
                 }
             }
         }.getOrNull()
+
+    private fun fingerprint(digest: MessageDigest, text: String): String =
+        Base64.getEncoder().encodeToString(digest.digest(text.toByteArray(Charsets.UTF_8)))
 
     private fun canAccelerate(query: String): Boolean =
         query.length >= MIN_QUERY_LENGTH && query.all { it.code in ASCII_PRINTABLE_RANGE }

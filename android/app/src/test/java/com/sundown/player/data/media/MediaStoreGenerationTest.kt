@@ -32,6 +32,42 @@ class MediaStoreGenerationTest {
     }
 
     @Test
+    fun absentRemovableVolumesDoNotDeleteCachedTracks() {
+        val previous = setOf("ms:7", "ms:ABCD-1234:9", "ms:WXYZ-5678:11")
+        val current = setOf("ms:8", "ms:ABCD-1234:9")
+
+        assertEquals(
+            listOf("ms:7"),
+            removedMediaStoreIds(previous, current, setOf("external_primary", "ABCD-1234")),
+        )
+        assertEquals(
+            listOf("ms:7"),
+            removedMediaStoreIds(previous, current, setOf("external_primary")),
+        )
+    }
+
+    @Test
+    fun detachedVolumeCheckpointIsRetainedWithoutKeepingStaleMountedCheckpoint() {
+        val primary = MediaStoreCheckpoint("primary-v2", 57L)
+        val mountedButUncheckpointed = MediaStoreCheckpoint("old-card-v1", 12L)
+        val detached = MediaStoreCheckpoint("detached-v3", 81L)
+        val currentPrimary = MediaStoreCheckpoint("primary-v2", 63L)
+
+        assertEquals(
+            mapOf("external_primary" to currentPrimary, "WXYZ-5678" to detached),
+            mergeMediaStoreCheckpoints(
+                previous = mapOf(
+                    "external_primary" to primary,
+                    "ABCD-1234" to mountedButUncheckpointed,
+                    "WXYZ-5678" to detached,
+                ),
+                scannedVolumes = setOf("external_primary", "ABCD-1234"),
+                current = mapOf("external_primary" to currentPrimary),
+            ),
+        )
+    }
+
+    @Test
     fun volumeCheckpointsRoundTripInStableOrder() {
         val checkpoints = linkedMapOf(
             "ABCD-1234" to MediaStoreCheckpoint("opaque|version=一", 81L),

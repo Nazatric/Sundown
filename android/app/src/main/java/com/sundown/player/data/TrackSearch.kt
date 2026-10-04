@@ -18,6 +18,8 @@ internal fun TrackEntity.searchDocumentText(): String =
 internal fun TrackEntity.matchesSearch(query: String): Boolean =
     query.isBlank() || searchDocumentText().contains(query, ignoreCase = true)
 
-/** Keep the unsynchronized-index fallback exact rather than returning stale positives. */
-internal fun TrackEntity.matchesPendingSearch(indexedText: String?, query: String): Boolean =
-    indexedText != searchDocumentText() && matchesSearch(query)
+/** FTS is usable only for the exact immutable Room snapshot that was synchronized. */
+internal fun isSearchIndexSnapshotCurrent(
+    indexedTracks: List<TrackEntity>?,
+    currentTracks: List<TrackEntity>,
+): Boolean = indexedTracks === currentTracks

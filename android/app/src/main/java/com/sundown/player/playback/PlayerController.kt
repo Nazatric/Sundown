@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.runtime.Immutable
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+@Immutable
 data class PlayerSnapshot(
     val trackId: String? = null,
     val title: String = "",
@@ -36,14 +38,18 @@ data class PlayerSnapshot(
     val artId: String? = null,
     val playing: Boolean = false,
     val loading: Boolean = false,
-    val elapsedMs: Long = 0L,
-    val durationMs: Long = 0L,
     val volume: Float = 0.8f,
     val muted: Boolean = false,
     val shuffle: Boolean = false,
     val repeat: String = "off",
     val hasSource: Boolean = false,
-    val queueIds: List<String> = emptyList(),
+)
+
+/** Frequently changing playhead data stays out of the library/player shell state. */
+@Immutable
+data class PlaybackProgress(
+    val elapsedMs: Long = 0L,
+    val durationMs: Long = 0L,
 )
 
 /** Media3 controller adapter for the native background playback session. */
@@ -76,6 +82,10 @@ class PlayerController(
 
     private val _state = MutableStateFlow(PlayerSnapshot())
     val state: StateFlow<PlayerSnapshot> = _state.asStateFlow()
+    private val _progress = MutableStateFlow(PlaybackProgress())
+    val progress: StateFlow<PlaybackProgress> = _progress.asStateFlow()
+    private val _queueState = MutableStateFlow<List<TrackEntity>>(emptyList())
+    val queueState: StateFlow<List<TrackEntity>> = _queueState.asStateFlow()
 
     var onDurationResolved: ((String, Int) -> Unit)? = null
     var onError: ((String) -> Unit)? = null
@@ -104,7 +114,7 @@ class PlayerController(
                     progressJob = scope.launch {
                         while (isActive) {
                             delay(PROGRESS_INTERVAL_MS)
-                            publish()
+                            if (controller?.isPlaying == true) publishProgress()
                         }
                     }
                     onReady()
@@ -234,6 +244,7 @@ class PlayerController(
         queue = tracks.toList()
         queueById = queue.associateBy(TrackEntity::id)
         queueIds = queue.map(TrackEntity::id)
+        _queueState.value = queue
     }
 
     fun containsFolderTracks(): Boolean {
@@ -246,6 +257,9 @@ class PlayerController(
 
     /** Current queue in play order as Room track records. */
     fun queueTracks(): List<TrackEntity> = queue
+
+    /** Current queue IDs for lightweight preference checkpoints. */
+    fun queueIds(): List<String> = queueIds
 
     /** Jump to a queued item without rebuilding the queue. */
     fun jumpTo(trackId: String): Boolean {
@@ -262,9 +276,7 @@ class PlayerController(
         val index = queue.indexOfFirst { it.id == trackId }
         if (index < 0) return false
         activePlayer.removeMediaItem(index)
-        queue = queue.filterIndexed { i, _ -> i != index }
-        queueById = queue.associateBy(TrackEntity::id)
-        queueIds = queue.map(TrackEntity::id)
+        updateQueue(queue.filterIndexed { i, _ -> i != index })
         publish()
         return true
     }
@@ -445,6 +457,7 @@ class PlayerController(
     private fun publish() {
         val activePlayer = controller ?: run {
             _state.value = PlayerSnapshot()
+            _progress.value = PlaybackProgress()
             return
         }
         val id = activePlayer.currentMediaItem?.mediaId
@@ -462,8 +475,6 @@ class PlayerController(
             artId = track?.artId,
             playing = activePlayer.isPlaying,
             loading = activePlayer.playbackState == Player.STATE_BUFFERING,
-            elapsedMs = activePlayer.currentPosition.coerceAtLeast(0L),
-            durationMs = duration.takeIf { it > 0L } ?: 0L,
             volume = activePlayer.volume,
             muted = activePlayer.volume <= 0f,
             shuffle = activePlayer.shuffleModeEnabled,
@@ -473,8 +484,19 @@ class PlayerController(
                 else -> "off"
             },
             hasSource = activePlayer.mediaItemCount > 0,
-            queueIds = queueIds,
         )
+        publishProgress()
+    }
+
+    private fun publishProgress() {
+        val activePlayer = controller ?: run {
+            _progress.value = PlaybackProgress()
+            return
+        }
+        val duration = activePlayer.duration.takeIf { it > 0L } ?: 0L
+        val elapsed = activePlayer.currentPosition.coerceAtLeast(0L)
+            .let { if (duration > 0L) it.coerceAtMost(duration) else it }
+        _progress.value = PlaybackProgress(elapsedMs = elapsed, durationMs = duration)
     }
 
     private companion object {

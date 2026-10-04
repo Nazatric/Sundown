@@ -1,6 +1,6 @@
 package com.sundown.player.ui.components
 
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -75,9 +75,11 @@ fun ArtworkImage(
     alpha: Float = 1f,
 ) {
     val loader = LocalArtworkLoader.current
-    var bitmap by remember(artId, small, loader) {
-        mutableStateOf(artId?.let { loader?.cached(it, small) })
+    val initialBitmap = remember(artId, small, loader) {
+        artId?.let { loader?.cached(it, small) }
     }
+    var bitmap by remember(artId, small, loader) { mutableStateOf(initialBitmap) }
+    val imageAlpha = remember(artId, small, loader) { Animatable(if (initialBitmap != null) 1f else 0f) }
 
     LaunchedEffect(artId, small, loader) {
         bitmap = if (artId != null && loader != null) {
@@ -86,22 +88,23 @@ fun ArtworkImage(
             null
         }
     }
+    LaunchedEffect(bitmap, initialBitmap) {
+        if (bitmap != null && initialBitmap == null) {
+            imageAlpha.animateTo(1f, tween(durationMillis = 140))
+        }
+    }
 
     val image = bitmap
-    val imageFade by animateFloatAsState(
-        targetValue = if (image == null) 0f else 1f,
-        animationSpec = tween(durationMillis = 140),
-        label = "artwork-fade-in",
-    )
+    val fade = imageAlpha.value
     Box(modifier) {
-        if (image == null || imageFade < 1f) {
+        if (image == null || fade < 1f) {
             SleevePlaceholder(Modifier.matchParentSize())
         }
         if (image != null) {
             Image(
                 bitmap = image,
                 contentDescription = null,
-                modifier = Modifier.matchParentSize().graphicsLayer { this.alpha = imageFade },
+                modifier = Modifier.matchParentSize().graphicsLayer { this.alpha = fade },
                 // Square crop keeps every cover the same visual proportion even
                 // when the embedded art is 3:2 or 1500x1000.
                 contentScale = ContentScale.Crop,

@@ -76,7 +76,9 @@ class PlaybackService : MediaSessionService() {
         checkpointJob = serviceScope.launch {
             while (isActive) {
                 delay(CHECKPOINT_INTERVAL_MS)
-                persistCheckpoint()
+                // Empty-queue transitions are checkpointed by the timeline listener;
+                // don't rewrite an unchanged empty snapshot every two seconds.
+                if (queueSnapshot.isNotEmpty()) persistCheckpoint()
             }
         }
     }

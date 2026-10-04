@@ -98,6 +98,21 @@ jobs:
             exit "$test_exit"
           fi
 
+      - name: Run Android lint
+        working-directory: android
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:lintDebug 2>&1 | tee /tmp/sundown-android-lint.log
+          lint_exit=${PIPESTATUS[0]}
+          if [[ "$lint_exit" -ne 0 ]]; then
+            details="$(grep -Ei '(^e: |error:|what went wrong|execution failed for task|caused by:|unresolved reference|failed to transform)' /tmp/sundown-android-lint.log | tail -n 16)"
+            if [[ -z "$details" ]]; then details="$(tail -n 30 /tmp/sundown-android-lint.log)"; fi
+            summary="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Android lint failed::$summary"
+            exit "$lint_exit"
+          fi
+
       - name: Assemble debug APK
         working-directory: android
         shell: bash
