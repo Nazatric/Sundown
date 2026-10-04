@@ -430,19 +430,20 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             player.setShuffleEnabled(prefs.shuffle)
             player.setRepeatMode(prefs.repeat)
 
-            val allTracks = repo.tracks.first()
-            // A MediaSession can outlive this Activity/ViewModel. Reattach Room
-            // metadata to that live queue instead of replacing the song that is
-            // already playing with an older DataStore checkpoint.
-            if (!player.attachTracks(allTracks)) {
-                val byId = allTracks.associateBy(TrackEntity::id)
-                val queue = prefs.queue.mapNotNull(byId::get).distinctBy(TrackEntity::id).toMutableList()
-                val current = prefs.currentId?.let(byId::get)
-                if (current != null && queue.none { it.id == current.id }) queue.add(0, current)
-                if (queue.isNotEmpty()) {
-                    val index = queue.indexOfFirst { it.id == prefs.currentId }.takeIf { it >= 0 } ?: 0
-                    player.restore(queue, index, prefs.position.coerceAtLeast(0L))
+            // A MediaSession can outlive this Activity/ViewModel. Fetch only its
+            // queue rows and reattach them rather than materializing every Room
+            // track just to update playback metadata.
+            val liveQueueTracks = repo.tracksByIds(player.sessionQueueIds())
+            if (!player.attachTracks(liveQueueTracks)) {
+                val savedTracks = repo.tracksByIds(prefs.queue + listOfNotNull(prefs.currentId))
+                val (queue, index) = withContext(Dispatchers.Default) {
+                    val byId = savedTracks.associateBy(TrackEntity::id)
+                    val queue = prefs.queue.mapNotNull(byId::get).distinctBy(TrackEntity::id).toMutableList()
+                    val current = prefs.currentId?.let(byId::get)
+                    if (current != null && queue.none { it.id == current.id }) queue.add(0, current)
+                    queue to (queue.indexOfFirst { it.id == prefs.currentId }.takeIf { it >= 0 } ?: 0)
                 }
+                if (queue.isNotEmpty()) player.restore(queue, index, prefs.position.coerceAtLeast(0L))
             }
         } catch (cancelled: CancellationException) {
             throw cancelled

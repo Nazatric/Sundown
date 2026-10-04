@@ -56,6 +56,15 @@ class LibraryRepository(
 
     val tracks: Flow<List<TrackEntity>> = dao.observeTracks()
 
+    /** Fetch only the live/saved queue rows, in SQLite-safe batches rather than loading the library again. */
+    suspend fun tracksByIds(ids: List<String>): List<TrackEntity> = withContext(Dispatchers.IO) {
+        val tracks = ArrayList<TrackEntity>()
+        for (batch in ids.distinct().chunked(TRACK_ID_QUERY_BATCH)) {
+            tracks += dao.tracksByIds(batch)
+        }
+        tracks
+    }
+
     val mediaStorePermissionGranted: Boolean get() = MediaStoreSource.hasReadPermission(context)
     val mediaStoreChanges = mediaStore.changes()
     val playlists: Flow<List<PlaylistEntity>> = dao.observePlaylists()
@@ -456,6 +465,7 @@ class LibraryRepository(
         private const val TAIL_BYTES = 1 shl 18
         private const val BATCH = 24
         private const val DELETE_BATCH = 400
+        private const val TRACK_ID_QUERY_BATCH = 400
         private const val ARTWORK_ID_PREFIX = "artb_"
         private const val TAG = "SundownLibrary"
     }

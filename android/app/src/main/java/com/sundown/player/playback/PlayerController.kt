@@ -229,6 +229,14 @@ class PlayerController(
         loadArtworkFor(activePlayer.currentMediaItem)
     }
 
+    /** Current Media3 queue IDs; use these to fetch only the needed Room rows. */
+    fun sessionQueueIds(): List<String> {
+        val activePlayer = controller ?: return emptyList()
+        return (0 until activePlayer.mediaItemCount).map { index ->
+            activePlayer.getMediaItemAt(index).mediaId
+        }
+    }
+
     /** Attaches Room rows to a session already playing in the background. */
     fun attachTracks(tracks: List<TrackEntity>): Boolean {
         val activePlayer = controller ?: return false

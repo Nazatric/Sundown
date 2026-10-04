@@ -50,8 +50,8 @@ interface LibraryDao {
     @Query("SELECT * FROM tracks")
     fun observeTracks(): Flow<List<TrackEntity>>
 
-    @Query("SELECT * FROM tracks")
-    suspend fun allTracks(): List<TrackEntity>
+    @Query("SELECT * FROM tracks WHERE id IN (:ids)")
+    suspend fun tracksByIds(ids: List<String>): List<TrackEntity>
 
     @Query("SELECT id, docUri, path, size, mtime, sourceVersion, artId FROM tracks WHERE source = :source")
     suspend fun fingerprints(source: String): List<FingerprintRow>
