@@ -3,11 +3,11 @@ package com.sundown.player.ui.theme
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Paint
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -75,43 +75,53 @@ fun Modifier.cssShadow(
     offsetY: Dp = 0.dp,
     cornerRadius: Dp = 0.dp,
     spread: Dp = 0.dp,
-): Modifier = drawBehind {
+): Modifier = drawWithCache {
     val blurPx = (blur.toPx() / 2f).coerceAtLeast(0.01f)
     val spreadPx = spread.toPx()
     val radiusPx = cornerRadius.toPx()
-    val paint = Paint()
-    paint.asFrameworkPaint().apply {
+    val offsetXPx = offsetX.toPx()
+    val offsetYPx = offsetY.toPx()
+    val frameworkPaint = Paint().asFrameworkPaint().apply {
         isAntiAlias = true
         this.color = android.graphics.Color.TRANSPARENT
-        setShadowLayer(blurPx, offsetX.toPx(), offsetY.toPx(), color.toArgb())
+        setShadowLayer(blurPx, offsetXPx, offsetYPx, color.toArgb())
     }
-    drawIntoCanvas { canvas ->
-        canvas.nativeCanvas.drawRoundRect(
-            -spreadPx,
-            -spreadPx,
-            size.width + spreadPx,
-            size.height + spreadPx,
-            radiusPx,
-            radiusPx,
-            paint.asFrameworkPaint(),
-        )
+    onDrawBehind {
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawRoundRect(
+                -spreadPx,
+                -spreadPx,
+                size.width + spreadPx,
+                size.height + spreadPx,
+                radiusPx,
+                radiusPx,
+                frameworkPaint,
+            )
+        }
     }
 }
 
-/** Soft elliptical ground shadow under each album stack. */
-fun DrawScope.groundShadow(insetLeft: Float, insetRight: Float, top: Float, height: Float, color: Color) {
-    val paint = Paint()
-    paint.asFrameworkPaint().apply {
-        isAntiAlias = true
-        this.color = color.toArgb()
-        maskFilter = android.graphics.BlurMaskFilter(4.dp.toPx(), android.graphics.BlurMaskFilter.Blur.NORMAL)
+/** Soft elliptical ground shadow under each album stack; paint/blur are cached per size. */
+fun Modifier.groundShadow(insetLeft: Dp, insetRight: Dp, bottom: Dp, height: Dp, color: Color): Modifier =
+    drawWithCache {
+        val left = insetLeft.toPx()
+        val right = insetRight.toPx()
+        val bottomPx = bottom.toPx()
+        val heightPx = height.toPx()
+        val frameworkPaint = Paint().asFrameworkPaint().apply {
+            isAntiAlias = true
+            this.color = color.toArgb()
+            maskFilter = android.graphics.BlurMaskFilter(4.dp.toPx(), android.graphics.BlurMaskFilter.Blur.NORMAL)
+        }
+        onDrawBehind {
+            val top = size.height - bottomPx
+            drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawOval(
+                    left, top, size.width - right, top + heightPx, frameworkPaint,
+                )
+            }
+        }
     }
-    drawIntoCanvas { canvas ->
-        canvas.nativeCanvas.drawOval(
-            insetLeft, top, size.width - insetRight, top + height, paint.asFrameworkPaint(),
-        )
-    }
-}
 
 /** 1 px top highlight used on every metal / silver control. */
 fun Modifier.innerTopHighlight(color: Color = Color(0x3DE7EDF2), radius: Dp = 0.dp): Modifier =

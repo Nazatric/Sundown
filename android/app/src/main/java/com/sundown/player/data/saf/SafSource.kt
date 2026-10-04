@@ -26,6 +26,7 @@ class SafSource(private val context: Context) {
         val name: String,
         val size: Long,
         val mtime: Long,
+        val sourceVersion: String?,
     )
 
     /** Save and verify the read grant before recording this source as connected. */
@@ -115,6 +116,7 @@ class SafSource(private val context: Context) {
                                 name = name,
                                 size = rows.longOrZero(sizeColumn),
                                 mtime = rows.longOrZero(modifiedColumn),
+                                sourceVersion = null,
                             )
                             if (out.size % 25 == 0) onProgress(out.size)
                         }

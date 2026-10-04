@@ -26,6 +26,10 @@ class PlaybackService : MediaSessionService() {
     private lateinit var prefs: SundownPrefs
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var checkpointJob: Job? = null
+    private var checkpointWriteJob: Job? = null
+    private var checkpointDirty = false
+    private var hasObservedQueue = false
+    private var queueSnapshot: List<String> = emptyList()
 
     override fun onCreate() {
         super.onCreate()
@@ -40,8 +44,43 @@ class PlaybackService : MediaSessionService() {
                 /* handleAudioFocus = */ true,
             )
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
-        player.skipSilenceEnabled = false
+        player.addListener(object : Player.Listener {
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                if (player.mediaItemCount > 0) hasObservedQueue = true
+                if (hasObservedQueue) {
+                    // The service main looper owns ExoPlayer; snapshot the queue only
+                    // when its timeline changes, not on every position checkpoint.
+                    queueSnapshot = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+                    requestCheckpoint()
+                }
+            }
+
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+
+            override fun onRepeatModeChanged(repeatMode: Int) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+        })
 
         val openApp = PendingIntent.getActivity(
             this,
@@ -56,19 +95,35 @@ class PlaybackService : MediaSessionService() {
         checkpointJob = serviceScope.launch {
             while (isActive) {
                 delay(CHECKPOINT_INTERVAL_MS)
-                persistCheckpoint()
+                // Position only advances while playing. Queue, pause, seek, repeat,
+                // and shuffle changes are checkpointed by their Player.Listener events.
+                if (queueSnapshot.isNotEmpty() && session?.player?.isPlaying == true) {
+                    persistCheckpoint()
+                }
             }
         }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
+    /** Coalesce queue/track callbacks but always write the newest observed state. */
+    private fun requestCheckpoint() {
+        checkpointDirty = true
+        if (checkpointWriteJob?.isActive == true) return
+        checkpointWriteJob = serviceScope.launch {
+            while (checkpointDirty && isActive) {
+                checkpointDirty = false
+                persistCheckpoint()
+            }
+        }
+    }
+
     private suspend fun persistCheckpoint() {
         val player = session?.player ?: return
-        if (player.mediaItemCount == 0) return
-        val queue = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+        val queue = queueSnapshot
+        if (queue.isEmpty() && !hasObservedQueue) return
         val currentId = player.currentMediaItem?.mediaId
-        val position = player.currentPosition.coerceAtLeast(0L)
+        val position = if (queue.isEmpty()) 0L else player.currentPosition.coerceAtLeast(0L)
         val volume = player.volume
         val shuffle = player.shuffleModeEnabled
         val repeat = when (player.repeatMode) {
@@ -79,7 +134,7 @@ class PlaybackService : MediaSessionService() {
         prefs.update { current ->
             current.copy(
                 queue = queue,
-                currentId = currentId ?: current.currentId,
+                currentId = currentId,
                 position = position,
                 // A muted ExoPlayer volume is zero; keep the previous slider
                 // level so unmute and next-launch restoration remain useful.

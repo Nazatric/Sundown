@@ -1,4 +1,6 @@
-# UniFFI bindings talk to the Rust core through JNA reflection.
+# UniFFI bindings talk to the Rust core through JNA reflection. JNA also
+# contains desktop AWT hooks, which Android does not provide or use.
+-dontwarn java.awt.**
 -keep class com.sun.jna.** { *; }
 -keep class * implements com.sun.jna.** { *; }
 -keep class uniffi.** { *; }

@@ -1,31 +1,62 @@
 # Sundown
 
-Sundown is a native Android music player engineered for a high-fidelity, offline-first experience. It combines a skeuomorphic visual identity inspired by classic digital music players with modern high-refresh-rate performance.
+A native, offline Android music player built with Kotlin, Jetpack Compose, Rust/UniFFI, Media3/ExoPlayer, Room, and Android's Storage Access Framework.
 
-## Core Features
+## Features
 
-- **Pixel-Perfect Skeuomorphism**: A dimensional, glossy UI with stacked album artwork and convincing depth.
-- **High-Performance Rendering**: Engineered for smooth 90/120Hz scrolling and responsive animations.
-- **Offline-First & Native**: Built with Kotlin and Jetpack Compose. No WebViews, no streaming, no cloud dependencies.
-- **Local Library**: Full support for Artists, Albums, Songs, Genres, and Playlists indexed directly from device storage.
-- **Advanced Media Support**: Powered by Media3 and ExoPlayer for robust playback and seamless system integration.
-- **Privacy by Design**: Requires no Internet permission. Your library stays on your device.
+- **Pixel-perfect skeuomorphic UI** — glossy layered album artwork stacks, dimensional shadows, polished metal controls
+- **Offline-first** — no Internet permission, no cloud, no streaming, no telemetry
+- **High-refresh-rate performance** — engineered for smooth 90/120 Hz scrolling and animations
+- **Full local library** — Artists, Albums, Songs, Genres, Playlists with A–Z index navigation
+- **Fast search** — SQLite FTS5 indexed search across title, artist, album, genre
+- **Robust playback** — Media3/ExoPlayer with MediaSession, system notification, background playback
+- **Incremental indexing** — MediaStore generation tracking, SAF folder scanning, handles adds/deletes/changes efficiently
+- **Multi-level artwork caching** — memory cache, disk cache, background decoding, near-visible prefetching
+- **Rust-powered core** — BLAKE3 hashing, metadata parsing, artwork processing via UniFFI
 
-## Technology Stack
+## Architecture
 
-- **Language**: Kotlin 1.9+
-- **UI Framework**: Jetpack Compose
-- **Media Engine**: Android Media3 (ExoPlayer)
-- **Local Storage**: MediaStore + Custom high-performance indexing
-- **Image Pipeline**: Custom optimized artwork extraction and caching
+| Layer | Technology |
+|---|---|
+| UI | Kotlin · Jetpack Compose |
+| Media | Media3 · ExoPlayer · MediaSession |
+| Storage | Room · SQLite FTS5 · Preferences DataStore |
+| Native Core | Rust · UniFFI · BLAKE3 |
+| File Access | Storage Access Framework · MediaStore |
 
-## Build & Development
+## Source Layout
 
-To build the project, open the `android` directory in Android Studio. Ensure you have the latest stable Android Gradle Plugin and Kotlin compiler.
+- `android/app/` — Kotlin/Compose UI, local library, playback service, Android integration
+- `android/rust/sundown-core/` — metadata parsing, artwork processing, indexing, BLAKE3 hashing
+- `android/docs/` — build notes, source audit, feature coverage, validation
+- `.github/workflows/android.yml` — CI: Rust tests, Android tests, debug + release APK builds
 
-For a release build:
-1. Configure your signing credentials in `android/app/build.gradle.kts` (or provide them via environment variables).
-2. Run `./gradlew assembleRelease` to generate a universal signed APK.
+## Build
+
+Requirements: JDK 17, Android SDK 34, NDK 26.3.11579264, Rust stable with Android targets, `cargo-ndk`.
+
+```bash
+cd android
+gradle :app:testDebugUnitTest :app:assembleDebug
+```
+
+The Gradle build compiles the Rust core for `arm64-v8a`, `armeabi-v7a`, and `x86_64`, generates UniFFI Kotlin bindings, then builds the universal APK (ABI splitting disabled).
+
+### Release Build
+
+Release signing uses environment variables: `SUNDOWN_STORE_FILE`, `SUNDOWN_STORE_PASSWORD`, `SUNDOWN_KEY_ALIAS`, `SUNDOWN_KEY_PASSWORD`. CI uses equivalent GitHub secrets (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`).
+
+```bash
+SUNDOWN_STORE_FILE=release.keystore \
+SUNDOWN_STORE_PASSWORD=... \
+SUNDOWN_KEY_ALIAS=... \
+SUNDOWN_KEY_PASSWORD=... \
+gradle :app:assembleRelease
+```
+
+## Release
+
+See [Releases](https://github.com/Nazatric/Sundown/releases) for the latest universal APK.
 
 ## License
 

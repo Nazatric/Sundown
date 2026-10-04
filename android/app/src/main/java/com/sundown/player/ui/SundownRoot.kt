@@ -8,6 +8,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -17,13 +19,17 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.sundown.player.data.db.TrackEntity
 import com.sundown.player.nav.Route
+import com.sundown.player.playback.PlaybackProgress
 import com.sundown.player.playback.PlayerSnapshot
+import kotlinx.coroutines.flow.StateFlow
 import com.sundown.player.ui.components.ConfirmSundownDialog
 import com.sundown.player.ui.components.NoticeToast
 import com.sundown.player.ui.screens.*
 import com.sundown.player.ui.theme.D
 import com.sundown.player.ui.theme.P
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 private data class ConfirmRequest(
     val title: String,
@@ -32,11 +38,20 @@ private data class ConfirmRequest(
     val onConfirm: () -> Unit,
 )
 
+/** Ignore taps from a sheet that is already leaving the back stack. */
+private fun popEntry(nav: NavHostController, entry: NavBackStackEntry): Boolean =
+    nav.currentBackStackEntry?.id == entry.id && nav.popBackStack()
+
+private fun dismissEntry(nav: NavHostController, entry: NavBackStackEntry): () -> Boolean = {
+    popEntry(nav, entry)
+}
+
 @Composable
 fun SundownRoot(
     vm: LibraryViewModel,
     state: LibraryUiState,
     playback: PlayerSnapshot,
+    playbackProgress: StateFlow<PlaybackProgress>,
     libraryPlayback: LibraryPlaybackState,
     onPickFolder: () -> Unit,
     onPickFiles: () -> Unit,
@@ -71,7 +86,8 @@ fun SundownRoot(
                 onQuery = vm::setQuery,
                 onClearQuery = vm::clearQuery,
                 onClearFilters = vm::clearFilters,
-                onOpenSources = { nav.navigate(Route.Sources.path) },
+                onOpenSources = { nav.navigate(Route.Sources.path) { launchSingleTop = true } },
+                onGrantMediaAccess = onGrantMediaAccess,
                 onOpenAlbum = { key -> nav.navigate(Route.Album.of(key)) },
                 onOpenPlaylist = { id -> nav.navigate(Route.Playlist.of(id)) },
                 onNewPlaylist = { nav.navigate(Route.newPlaylist()) },
@@ -85,12 +101,14 @@ fun SundownRoot(
             )
             MiniPlayer(
                 snapshot = playback,
+                progress = playbackProgress,
                 onOpenNowPlaying = { nav.navigate(Route.NowPlaying.path) },
                 onPrevious = { vm.player.previous(); vm.persistPlaybackState() },
                 onToggle = { vm.player.toggle(); vm.persistPlaybackState() },
                 onNext = { vm.player.next(); vm.persistPlaybackState() },
                 onScrub = vm.player::seekFraction,
-                onVolume = { vm.player.setVolume(it); vm.persistPlaybackState() },
+                onVolume = vm.player::setVolume,
+                onVolumeCommit = { vm.persistPlaybackState() },
                 onMute = { vm.player.toggleMute(); vm.persistPlaybackState() },
                 onShuffle = { vm.player.toggleShuffle(); vm.persistPlaybackState() },
                 onRepeat = { vm.player.cycleRepeat(); vm.persistPlaybackState() },
@@ -102,6 +120,7 @@ fun SundownRoot(
             vm = vm,
             state = state,
             playback = playback,
+            playbackProgress = playbackProgress,
             onPickFolder = onPickFolder,
             onPickFiles = onPickFiles,
             onGrantMediaAccess = onGrantMediaAccess,
@@ -144,12 +163,12 @@ private fun SheetHost(
     vm: LibraryViewModel,
     state: LibraryUiState,
     playback: PlayerSnapshot,
+    playbackProgress: StateFlow<PlaybackProgress>,
     onPickFolder: () -> Unit,
     onPickFiles: () -> Unit,
     onGrantMediaAccess: () -> Unit,
     onConfirm: (ConfirmRequest) -> Unit,
 ) {
-    val dismiss: () -> Unit = { nav.popBackStack() }
     val backStackEntry by nav.currentBackStackEntryAsState()
 
     if (backStackEntry?.destination?.route == Route.Library.path && state.filterActive) {
@@ -171,33 +190,40 @@ private fun SheetHost(
             BackHandler { vm.clearFilters(); nav.popBackStack() }
         }
 
-        composable(Route.Sources.path) {
-            SundownSheet(onDismiss = dismiss) {
+        composable(Route.Sources.path) { entry ->
+            val dismiss = dismissEntry(nav, entry)
+            val treeUri = state.prefs.treeUri
+            var folderAccess by remember(treeUri) { mutableStateOf<Boolean?>(if (treeUri == null) false else null) }
+            LaunchedEffect(treeUri) {
+                folderAccess = if (treeUri == null) false else vm.hasFolderAccess(treeUri)
+            }
+            SundownSheet(onDismiss = dismiss) { closeSheet, closeSheetThen ->
                 SourcesSheetContent(
                     prefs = state.prefs,
                     trackCount = state.tracks.size,
                     albumCount = state.allAlbums.size,
-                    sessionCount = state.tracks.count { it.source == "file" },
-                    hasAccess = vm.hasFolderAccess(state.prefs.treeUri),
+                    sessionCount = state.sessionTrackCount,
+                    hasAccess = folderAccess == true,
+                    checkingFolderAccess = treeUri != null && folderAccess == null,
                     mediaStorePermission = state.mediaStorePermission,
                     scanning = state.scan != null,
-                    onClose = dismiss,
-                    onPickFolder = { dismiss(); onPickFolder() },
-                    onRestoreAccess = { dismiss(); onPickFolder() },
-                    onRescan = { dismiss(); vm.rescan() },
-                    onDisconnect = { dismiss(); vm.disconnectFolder() },
-                    onAddFiles = { dismiss(); onPickFiles() },
-                    onGrantMediaAccess = { dismiss(); onGrantMediaAccess() },
-                    onScanDeviceMusic = { dismiss(); vm.rescanDeviceMusic() },
+                    onClose = closeSheet,
+                    onPickFolder = { closeSheetThen(onPickFolder) },
+                    onRestoreAccess = { closeSheetThen(onPickFolder) },
+                    onRescan = { closeSheetThen { vm.rescan() } },
+                    onDisconnect = { closeSheetThen { vm.disconnectFolder() } },
+                    onAddFiles = { closeSheetThen(onPickFiles) },
+                    onGrantMediaAccess = { closeSheetThen(onGrantMediaAccess) },
+                    onScanDeviceMusic = { closeSheetThen { vm.rescanDeviceMusic() } },
                     onSettings = { update -> vm.updateSettings(update); Unit },
-                    onClearArtwork = { dismiss(); vm.clearArtwork() },
+                    onClearArtwork = { closeSheetThen { vm.clearArtwork() } },
                     onEraseAll = {
                         onConfirm(
                             ConfirmRequest(
                                 title = "Erase all library data?",
                                 message = "Erase all library data, playlists and artwork cached by this app? Your music files are not touched.",
                                 confirmLabel = "Erase",
-                                onConfirm = { dismiss(); vm.eraseEverything() },
+                                onConfirm = { closeSheetThen { vm.eraseEverything() } },
                             ),
                         )
                     },
@@ -205,15 +231,16 @@ private fun SheetHost(
             }
         }
 
-        composable(Route.NowPlaying.path) {
-            SundownSheet(onDismiss = dismiss) {
+        composable(Route.NowPlaying.path) { entry ->
+            val dismiss = dismissEntry(nav, entry)
+            SundownSheet(onDismiss = dismiss) { closeSheet, closeSheetThen ->
                 NowPlayingContent(
                     snapshot = playback,
+                    progress = playbackProgress,
                     onOpenAlbum = {
                         val track = playback.trackId?.let(state.tracksById::get)
                         if (track != null) {
-                            nav.popBackStack()
-                            nav.navigate(Route.Album.of(track.albumKey))
+                            closeSheetThen { nav.navigate(Route.Album.of(track.albumKey)) }
                         }
                     },
                     onOpenQueue = { nav.navigate(Route.Queue.path) },
@@ -221,7 +248,8 @@ private fun SheetHost(
                     onToggle = { vm.player.toggle(); vm.persistPlaybackState() },
                     onNext = { vm.player.next(); vm.persistPlaybackState() },
                     onScrub = vm.player::seekFraction,
-                    onVolume = { vm.player.setVolume(it); vm.persistPlaybackState() },
+                    onVolume = vm.player::setVolume,
+                    onVolumeCommit = { vm.persistPlaybackState() },
                     onMute = { vm.player.toggleMute(); vm.persistPlaybackState() },
                     onShuffle = { vm.player.toggleShuffle(); vm.persistPlaybackState() },
                     onRepeat = { vm.player.cycleRepeat(); vm.persistPlaybackState() },
@@ -229,16 +257,18 @@ private fun SheetHost(
             }
         }
 
-        composable(Route.Queue.path) {
-            SundownSheet(onDismiss = dismiss) {
+        composable(Route.Queue.path) { entry ->
+            val dismiss = dismissEntry(nav, entry)
+            val queue by vm.queueState.collectAsStateWithLifecycle()
+            SundownSheet(onDismiss = dismiss) { closeSheet, closeSheetThen ->
                 QueueSheetContent(
-                    queue = vm.queueTracks(),
+                    queue = queue,
                     currentTrackId = playback.trackId,
                     playing = playback.playing,
-                    onClose = dismiss,
+                    onClose = closeSheet,
                     onJump = vm::jumpToQueued,
                     onRemove = vm::removeFromQueue,
-                    onClear = { vm.clearQueue(); nav.popBackStack() },
+                    onClear = { vm.clearQueue(); closeSheet() },
                 )
             }
         }
@@ -247,18 +277,19 @@ private fun SheetHost(
             Route.Album.path,
             arguments = listOf(navArgument("key") { type = NavType.StringType }),
         ) { entry ->
+            val dismiss = dismissEntry(nav, entry)
             val key = entry.arguments?.getString("key").orEmpty()
-            val album = state.allAlbums.firstOrNull { it.key == key }
+            val album = state.allAlbumsByKey[key]
             if (album == null) {
-                if (state.booted) LaunchedEffect(key) { nav.popBackStack() }
+                if (state.booted) LaunchedEffect(key, entry.id) { popEntry(nav, entry) }
             } else {
-                SundownSheet(onDismiss = dismiss) {
+                SundownSheet(onDismiss = dismiss) { closeSheet, closeSheetThen ->
                     AlbumSheetContent(
                         album = album,
                         favorite = album.key in state.favorites,
                         currentTrackId = playback.trackId,
                         playing = playback.playing,
-                        onClose = dismiss,
+                        onClose = closeSheet,
                         onPlay = { track -> vm.playTracks(album.tracks, track.id) },
                         onAdd = { track -> nav.navigate(Route.Chooser.of(track.id)) },
                         onToggleFavorite = { vm.toggleFavorite(album.key) },
@@ -271,20 +302,25 @@ private fun SheetHost(
             Route.Playlist.path,
             arguments = listOf(navArgument("id") { type = NavType.StringType }),
         ) { entry ->
+            val dismiss = dismissEntry(nav, entry)
             val id = entry.arguments?.getString("id").orEmpty()
-            val playlist = state.playlists.firstOrNull { it.id == id }
+            val playlist = state.playlistsById[id]
             if (playlist == null) {
-                if (state.booted) LaunchedEffect(id) { nav.popBackStack() }
+                if (state.booted) LaunchedEffect(id, entry.id) { popEntry(nav, entry) }
             } else {
-                val ids = playlist.ids()
-                val tracks: List<TrackEntity> = ids.mapNotNull(state.tracksById::get)
-                SundownSheet(onDismiss = dismiss) {
+                var tracks by remember(id) { mutableStateOf(emptyList<TrackEntity>()) }
+                LaunchedEffect(id, playlist.trackIds, state.tracksById) {
+                    tracks = withContext(Dispatchers.Default) {
+                        playlist.ids().mapNotNull(state.tracksById::get)
+                    }
+                }
+                SundownSheet(onDismiss = dismiss) { closeSheet, closeSheetThen ->
                     PlaylistSheetContent(
                         playlist = playlist,
                         tracks = tracks,
                         currentTrackId = playback.trackId,
                         playing = playback.playing,
-                        onClose = dismiss,
+                        onClose = closeSheet,
                         onPlay = { track -> vm.playTracks(tracks, track.id) },
                         onAdd = { track -> nav.navigate(Route.Chooser.of(track.id)) },
                         onDelete = {
@@ -293,7 +329,7 @@ private fun SheetHost(
                                     title = "Delete this playlist?",
                                     message = "Your music files are not affected.",
                                     confirmLabel = "Delete",
-                                    onConfirm = { vm.deletePlaylist(playlist.id); nav.popBackStack() },
+                                    onConfirm = { closeSheetThen { vm.deletePlaylist(playlist.id) } },
                                 ),
                             )
                         },
@@ -306,20 +342,21 @@ private fun SheetHost(
             Route.Chooser.path,
             arguments = listOf(navArgument("trackId") { type = NavType.StringType }),
         ) { entry ->
+            val dismiss = dismissEntry(nav, entry)
             val trackId = entry.arguments?.getString("trackId").orEmpty()
             val track = state.tracksById[trackId]
             if (track == null) {
-                if (state.booted) LaunchedEffect(trackId) { nav.popBackStack() }
+                if (state.booted) LaunchedEffect(trackId, entry.id) { popEntry(nav, entry) }
             } else {
-                SundownSheet(onDismiss = dismiss) {
+                SundownSheet(onDismiss = dismiss) { closeSheet, closeSheetThen ->
                     ChooserSheetContent(
                         track = track,
                         playlists = state.playlists,
-                        onClose = dismiss,
-                        onChoose = { playlist -> vm.addToPlaylist(playlist, track.id); nav.popBackStack() },
+                        playlistTrackIdSets = state.playlistTrackIdSetsById,
+                        onClose = closeSheet,
+                        onChoose = { playlist -> vm.addToPlaylist(playlist, track.id); closeSheet() },
                         onCreateNew = {
-                            nav.popBackStack()
-                            nav.navigate(Route.newPlaylist(track.id))
+                            closeSheetThen { nav.navigate(Route.newPlaylist(track.id)) }
                         },
                     )
                 }
@@ -330,15 +367,16 @@ private fun SheetHost(
             Route.NewPlaylist.path,
             arguments = listOf(navArgument("seed") { type = NavType.StringType; defaultValue = "" }),
         ) { entry ->
+            val dismiss = dismissEntry(nav, entry)
             val seed = entry.arguments?.getString("seed").orEmpty()
-            SundownSheet(onDismiss = dismiss) {
+            SundownSheet(onDismiss = dismiss) { closeSheet, closeSheetThen ->
                 NewPlaylistContent(
                     tracks = state.tracks,
                     seedIds = if (seed.isBlank()) emptyList() else listOf(seed),
-                    onClose = dismiss,
+                    onClose = closeSheet,
                     onCreate = { name, ids ->
                         vm.savePlaylist(null, name, ids)
-                        nav.popBackStack()
+                        closeSheet()
                     },
                 )
             }

@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.runtime.Immutable
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+@Immutable
 data class PlayerSnapshot(
     val trackId: String? = null,
     val title: String = "",
@@ -36,14 +38,18 @@ data class PlayerSnapshot(
     val artId: String? = null,
     val playing: Boolean = false,
     val loading: Boolean = false,
-    val elapsedMs: Long = 0L,
-    val durationMs: Long = 0L,
     val volume: Float = 0.8f,
     val muted: Boolean = false,
     val shuffle: Boolean = false,
     val repeat: String = "off",
     val hasSource: Boolean = false,
-    val queueIds: List<String> = emptyList(),
+)
+
+/** Frequently changing playhead data stays out of the library/player shell state. */
+@Immutable
+data class PlaybackProgress(
+    val elapsedMs: Long = 0L,
+    val durationMs: Long = 0L,
 )
 
 /** Media3 controller adapter for the native background playback session. */
@@ -59,6 +65,9 @@ class PlayerController(
     private var queue: List<TrackEntity> = emptyList()
     private var queueById: Map<String, TrackEntity> = emptyMap()
     private var queueIds: List<String> = emptyList()
+    private var queueRestorationPending = false
+    private val pendingQueueMutations = mutableListOf<QueueMutation>()
+    val isQueueRestorationPending: Boolean get() = queueRestorationPending
     private var lastVolume = 0.8f
     private var progressJob: Job? = null
     private var artworkJob: Job? = null
@@ -66,8 +75,17 @@ class PlayerController(
     private var lastReportedDuration: Pair<String, Int>? = null
     private var pendingPlay: (() -> Unit)? = null
 
+    private sealed interface QueueMutation {
+        data class Append(val tracks: List<TrackEntity>) : QueueMutation
+        object Clear : QueueMutation
+    }
+
     private val _state = MutableStateFlow(PlayerSnapshot())
     val state: StateFlow<PlayerSnapshot> = _state.asStateFlow()
+    private val _progress = MutableStateFlow(PlaybackProgress())
+    val progress: StateFlow<PlaybackProgress> = _progress.asStateFlow()
+    private val _queueState = MutableStateFlow<List<TrackEntity>>(emptyList())
+    val queueState: StateFlow<List<TrackEntity>> = _queueState.asStateFlow()
 
     var onDurationResolved: ((String, Int) -> Unit)? = null
     var onError: ((String) -> Unit)? = null
@@ -96,7 +114,7 @@ class PlayerController(
                     progressJob = scope.launch {
                         while (isActive) {
                             delay(PROGRESS_INTERVAL_MS)
-                            publish()
+                            if (controller?.isPlaying == true) publishProgress()
                         }
                     }
                     onReady()
@@ -142,8 +160,41 @@ class PlayerController(
         }
     }
 
+    /** Hold queue edits until the persisted queue has been reconciled with the live session. */
+    fun beginQueueRestoration() {
+        queueRestorationPending = true
+    }
+
+    /** Applies queue edits made while restoration was in flight, in their original order. */
+    fun finishQueueRestoration(): Boolean {
+        if (!queueRestorationPending) return false
+        val activePlayer = controller ?: return false
+        queueRestorationPending = false
+        if (pendingQueueMutations.isEmpty()) return false
+
+        var changed = false
+        pendingQueueMutations.forEach { mutation ->
+            when (mutation) {
+                is QueueMutation.Append -> if (mutation.tracks.isNotEmpty()) {
+                    activePlayer.addMediaItems(mutation.tracks.map(::toMediaItem))
+                    updateQueue(queue + mutation.tracks)
+                    changed = true
+                }
+                QueueMutation.Clear -> {
+                    clearQueueNow(activePlayer)
+                    changed = true
+                }
+            }
+        }
+        pendingQueueMutations.clear()
+        if (changed) publish()
+        return changed
+    }
+
     fun play(tracks: List<TrackEntity>, startIndex: Int, autoplay: Boolean = true) {
         if (tracks.isEmpty()) return
+        // Starting a new selection replaces any queue edits made before restoration.
+        if (queueRestorationPending) pendingQueueMutations.clear()
         val activePlayer = controller
         if (activePlayer == null) {
             val deferredTracks = tracks.toList()
@@ -178,6 +229,14 @@ class PlayerController(
         loadArtworkFor(activePlayer.currentMediaItem)
     }
 
+    /** Current Media3 queue IDs; use these to fetch only the needed Room rows. */
+    fun sessionQueueIds(): List<String> {
+        val activePlayer = controller ?: return emptyList()
+        return (0 until activePlayer.mediaItemCount).map { index ->
+            activePlayer.getMediaItemAt(index).mediaId
+        }
+    }
+
     /** Attaches Room rows to a session already playing in the background. */
     fun attachTracks(tracks: List<TrackEntity>): Boolean {
         val activePlayer = controller ?: return false
@@ -193,6 +252,7 @@ class PlayerController(
         queue = tracks.toList()
         queueById = queue.associateBy(TrackEntity::id)
         queueIds = queue.map(TrackEntity::id)
+        _queueState.value = queue
     }
 
     fun containsFolderTracks(): Boolean {
@@ -206,44 +266,59 @@ class PlayerController(
     /** Current queue in play order as Room track records. */
     fun queueTracks(): List<TrackEntity> = queue
 
+    /** Current queue IDs for lightweight preference checkpoints. */
+    fun queueIds(): List<String> = queueIds
+
     /** Jump to a queued item without rebuilding the queue. */
-    fun jumpTo(trackId: String) {
-        val activePlayer = controller ?: return
+    fun jumpTo(trackId: String): Boolean {
+        val activePlayer = controller ?: return false
         val index = queue.indexOfFirst { it.id == trackId }
-        if (index < 0) return
+        if (index < 0) return false
         activePlayer.seekTo(index, 0L)
         activePlayer.play()
+        return true
     }
 
-    fun removeFromQueue(trackId: String) {
-        val activePlayer = controller ?: return
+    fun removeFromQueue(trackId: String): Boolean {
+        val activePlayer = controller ?: return false
         val index = queue.indexOfFirst { it.id == trackId }
-        if (index < 0) return
+        if (index < 0) return false
         activePlayer.removeMediaItem(index)
-        queue = queue.filterIndexed { i, _ -> i != index }
-        queueById = queue.associateBy(TrackEntity::id)
-        queueIds = queue.map(TrackEntity::id)
+        updateQueue(queue.filterIndexed { i, _ -> i != index })
         publish()
+        return true
     }
 
     /** Append without disturbing the current item. */
-    fun enqueue(tracks: List<TrackEntity>) {
-        val activePlayer = controller ?: return
-        if (tracks.isEmpty()) return
+    fun enqueue(tracks: List<TrackEntity>): Boolean {
+        if (tracks.isEmpty()) return false
+        if (queueRestorationPending) {
+            pendingQueueMutations += QueueMutation.Append(tracks.toList())
+            return true
+        }
+        val activePlayer = controller ?: return false
         activePlayer.addMediaItems(tracks.map(::toMediaItem))
         updateQueue(queue + tracks)
         publish()
+        return true
     }
 
     fun clearQueue() {
-        cancelArtworkLoad()
-        controller?.apply {
-            pause()
-            clearMediaItems()
-            playWhenReady = false
+        if (queueRestorationPending) {
+            pendingQueueMutations += QueueMutation.Clear
+            return
         }
+        controller?.let(::clearQueueNow)
         updateQueue(emptyList())
         publish()
+    }
+
+    private fun clearQueueNow(activePlayer: MediaController) {
+        cancelArtworkLoad()
+        activePlayer.pause()
+        activePlayer.clearMediaItems()
+        activePlayer.playWhenReady = false
+        updateQueue(emptyList())
     }
 
     fun toggle() {
@@ -253,7 +328,7 @@ class PlayerController(
 
     fun next() { controller?.seekToNextMediaItem() }
 
-    /** Matches the web rule: restart the track if more than 3 seconds elapsed. */
+    /** Restart the current track when it is more than 3 seconds into playback. */
     fun previous() {
         val activePlayer = controller ?: return
         if (activePlayer.currentPosition > 3_000L) activePlayer.seekTo(0L)
@@ -390,6 +465,7 @@ class PlayerController(
     private fun publish() {
         val activePlayer = controller ?: run {
             _state.value = PlayerSnapshot()
+            _progress.value = PlaybackProgress()
             return
         }
         val id = activePlayer.currentMediaItem?.mediaId
@@ -407,8 +483,6 @@ class PlayerController(
             artId = track?.artId,
             playing = activePlayer.isPlaying,
             loading = activePlayer.playbackState == Player.STATE_BUFFERING,
-            elapsedMs = activePlayer.currentPosition.coerceAtLeast(0L),
-            durationMs = duration.takeIf { it > 0L } ?: 0L,
             volume = activePlayer.volume,
             muted = activePlayer.volume <= 0f,
             shuffle = activePlayer.shuffleModeEnabled,
@@ -418,8 +492,19 @@ class PlayerController(
                 else -> "off"
             },
             hasSource = activePlayer.mediaItemCount > 0,
-            queueIds = queueIds,
         )
+        publishProgress()
+    }
+
+    private fun publishProgress() {
+        val activePlayer = controller ?: run {
+            _progress.value = PlaybackProgress()
+            return
+        }
+        val duration = activePlayer.duration.takeIf { it > 0L } ?: 0L
+        val elapsed = activePlayer.currentPosition.coerceAtLeast(0L)
+            .let { if (duration > 0L) it.coerceAtMost(duration) else it }
+        _progress.value = PlaybackProgress(elapsedMs = elapsed, durationMs = duration)
     }
 
     private companion object {

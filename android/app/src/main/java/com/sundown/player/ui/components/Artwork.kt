@@ -1,5 +1,7 @@
 package com.sundown.player.ui.components
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,6 +26,9 @@ import com.sundown.player.ui.theme.groundShadow
 
 /** Supplies decoded high-resolution grid and compact row previews from the Rust core. */
 interface ArtworkLoader {
+    /** Non-blocking memory-cache lookup so prefetched covers can render on the first frame. */
+    fun cached(artId: String, small: Boolean): ImageBitmap? = null
+
     suspend fun load(artId: String, small: Boolean): ImageBitmap?
 }
 
@@ -70,26 +75,43 @@ fun ArtworkImage(
     alpha: Float = 1f,
 ) {
     val loader = LocalArtworkLoader.current
-    var bitmap by remember(artId, small, loader) { mutableStateOf<ImageBitmap?>(null) }
+    val initialBitmap = remember(artId, small, loader) {
+        artId?.let { loader?.cached(it, small) }
+    }
+    var bitmap by remember(artId, small, loader) { mutableStateOf(initialBitmap) }
+    val imageAlpha = remember(artId, small, loader) { Animatable(if (initialBitmap != null) 1f else 0f) }
 
     LaunchedEffect(artId, small, loader) {
-        bitmap = if (artId != null && loader != null) loader.load(artId, small) else null
+        bitmap = if (artId != null && loader != null) {
+            loader.cached(artId, small) ?: loader.load(artId, small)
+        } else {
+            null
+        }
+    }
+    LaunchedEffect(bitmap, initialBitmap) {
+        if (bitmap != null && initialBitmap == null) {
+            imageAlpha.animateTo(1f, tween(durationMillis = 140))
+        }
     }
 
     val image = bitmap
-    if (image != null) {
-        Image(
-            bitmap = image,
-            contentDescription = null,
-            modifier = modifier,
-            // Square crop keeps every cover the same visual proportion even
-            // when the embedded art is 3:2 or 1500x1000.
-            contentScale = ContentScale.Crop,
-            colorFilter = colorFilter,
-            alpha = alpha,
-        )
-    } else {
-        SleevePlaceholder(modifier)
+    val fade = imageAlpha.value
+    Box(modifier) {
+        if (image == null || fade < 1f) {
+            SleevePlaceholder(Modifier.matchParentSize())
+        }
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                modifier = Modifier.matchParentSize().graphicsLayer { this.alpha = fade },
+                // Square crop keeps every cover the same visual proportion even
+                // when the embedded art is 3:2 or 1500x1000.
+                contentScale = ContentScale.Crop,
+                colorFilter = colorFilter,
+                alpha = alpha,
+            )
+        }
     }
 }
 
@@ -145,32 +167,6 @@ private fun Sleeve(
  *   right  +3.0deg  ( 3, 3)  brightness .90  saturate .75
  *   front   0       ( 0, 0)  full art + hairline inner highlight
  */
-/**
- * convincing skeuomorphic gloss: a subtle white-to-transparent radial gradient
- * that simulates a light source from the top-left hitting a curved surface.
- */
-@Composable
-private fun BoxScope.GlossOverlay() {
-    Canvas(Modifier.matchParentSize()) {
-        val glossGradient = Brush.verticalGradient(
-            0.0f to Color.White.copy(alpha = 0.15f),
-            0.45f to Color.White.copy(alpha = 0.05f),
-            0.50f to Color.Transparent,
-            startY = 0f,
-            endY = size.height
-        )
-        drawRect(glossGradient)
-        
-        // top edge specular highlight
-        drawLine(
-            color = Color.White.copy(alpha = 0.35f),
-            start = Offset(0f, 0f),
-            end = Offset(size.width, 0f),
-            strokeWidth = 1.2.dp.toPx()
-        )
-    }
-}
-
 @Composable
 fun AlbumStack(
     artId: String?,
@@ -179,47 +175,59 @@ fun AlbumStack(
     modifier: Modifier = Modifier,
     small: Boolean = false,
 ) {
+    val rearTone = remember { toneFilter(1.2f, 0.45f) }
+    val leftTone = remember { toneFilter(0.79f, 0.6f) }
+    val rightTone = remember { toneFilter(0.9f, 0.75f) }
     Box(modifier.size(size)) {
-        Canvas(Modifier.matchParentSize()) {
-            groundShadow(
-                insetLeft = D.groundShadowInsetL.toPx(),
-                insetRight = D.groundShadowInsetR.toPx(),
-                top = this.size.height - D.groundShadowBottom.toPx(),
-                height = D.groundShadowHeight.toPx(),
+        Spacer(
+            Modifier.matchParentSize().groundShadow(
+                insetLeft = D.groundShadowInsetL,
+                insetRight = D.groundShadowInsetR,
+                bottom = D.groundShadowBottom,
+                height = D.groundShadowHeight,
                 color = Color(0x6E0C151D),
-            )
-        }
-        // Stacked layers with precise transforms
-        Sleeve(4f, 1.dp, (-3.5).dp, borderColor = P.PaperEdge) {
+            ),
+        )
+        Sleeve(4f, 1.dp, (-3).dp, borderColor = P.PaperEdge) {
             Box(Modifier.fillMaxSize().background(G.paper))
         }
-        Sleeve(-4.2f, (-1.2).dp, (-2.5).dp) {
-            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(1.15f, 0.45f), alpha = 0.68f)
+        Sleeve(-4f, (-1).dp, (-2).dp) {
+            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), rearTone, alpha = 0.65f)
         }
-        Sleeve(-3.8f, (-3.5).dp, 3.5.dp) {
-            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(0.82f, 0.62f))
+        Sleeve(-3.7f, (-3).dp, 3.dp) {
+            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), leftTone)
         }
-        Sleeve(3.2f, 3.5.dp, 3.5.dp) {
-            ArtworkImage(artId, small, Modifier.fillMaxSize(), toneFilter(0.92f, 0.78f))
+        Sleeve(3f, 3.dp, 3.dp) {
+            ArtworkImage(artId, small, Modifier.fillMaxSize(), rightTone)
         }
-        
-        // Front cover with glossy finish
         Box(
             Modifier
                 .fillMaxSize()
-                .cssShadow(Color(0xB80A1219), blur = 5.dp, offsetY = 2.5.dp, cornerRadius = D.sleeveRadius)
+                .cssShadow(Color(0xB80A1219), blur = 4.dp, offsetY = 2.dp, cornerRadius = D.sleeveRadius)
                 .clip(RoundedCornerShape(D.sleeveRadius))
                 .background(P.SleeveFill)
                 .border(1.dp, P.SleeveEdge, RoundedCornerShape(D.sleeveRadius)),
         ) {
             ArtworkImage(artId, small, Modifier.fillMaxSize())
-            GlossOverlay()
-            
-            // 1px warm hairline inside the edge for depth
+            // A restrained, diagonal specular sheen restores the glossy front-sleeve finish
+            // without obscuring the cover artwork or rasterizing a functional layer.
+            Canvas(Modifier.matchParentSize()) {
+                drawRect(
+                    brush = Brush.linearGradient(
+                        0.00f to Color.White.copy(alpha = 0.10f),
+                        0.18f to Color.White.copy(alpha = 0.05f),
+                        0.42f to Color.Transparent,
+                        1.00f to Color.Transparent,
+                        start = Offset.Zero,
+                        end = Offset(this.size.width, this.size.height),
+                    ),
+                )
+            }
+            // .sleeve--front::after — 1px warm hairline inside the edge.
             Box(
                 Modifier
                     .matchParentSize()
-                    .border(1.dp, Color(0x4DF8F8F3), RoundedCornerShape(D.sleeveRadius)),
+                    .border(1.dp, Color(0x6BF8F8F3), RoundedCornerShape(1.dp)),
             )
         }
     }

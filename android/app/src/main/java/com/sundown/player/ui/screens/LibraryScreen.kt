@@ -24,23 +24,71 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.sundown.player.data.db.PlaylistEntity
 import com.sundown.player.data.db.TrackEntity
 import com.sundown.player.ui.*
 import com.sundown.player.ui.components.*
 import com.sundown.player.ui.icons.SIcon
 import com.sundown.player.ui.theme.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 private val TABS = listOf("Artists", "Albums", "Songs", "Genres", "Playlists")
+private val COMPACT_TAB_WEIGHTS = listOf(1f, 1f, 1f, 1f, 1.45f)
 private val ALPHABET = ('A'..'Z').map(Char::toString) + "#"
+
+/** Matches the Rust native sort key's leading-article rule and its ASCII A–Z index. */
+internal fun alphabetIndexKey(name: String): String {
+    val normalized = name.trim().lowercase().removePrefix("the ")
+    val first = normalized.firstOrNull() ?: return "#"
+    return if (first in 'a'..'z') first.uppercaseChar().toString() else "#"
+}
+
+private fun alphabetNames(state: LibraryUiState): List<String> = when (state.tab) {
+    LibraryTab.Albums -> state.albums.map(AlbumGroup::artist)
+    LibraryTab.Artists -> state.artists.map(ArtistGroup::name)
+    LibraryTab.Songs -> state.songs.map(TrackEntity::artist)
+    else -> emptyList()
+}
+
+private fun alphabetTargets(state: LibraryUiState): Map<String, Int> = buildMap {
+    alphabetNames(state).forEachIndexed { index, name ->
+        val letter = alphabetIndexKey(name)
+        if (letter !in this) put(letter, index)
+    }
+}
+
+private fun firstVisibleAlphabetLetter(
+    state: LibraryUiState,
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    songsState: androidx.compose.foundation.lazy.LazyListState,
+): String? {
+    val index = when (state.tab) {
+        LibraryTab.Songs -> songsState.layoutInfo.visibleItemsInfo
+            .asSequence()
+            .filter { it.index > 0 } // Ignore the sticky count/shuffle header.
+            .minOfOrNull { it.index - 1 }
+        LibraryTab.Albums, LibraryTab.Artists -> gridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
+        else -> null
+    } ?: return null
+    val name = when (state.tab) {
+        LibraryTab.Albums -> state.albums.getOrNull(index)?.artist
+        LibraryTab.Artists -> state.artists.getOrNull(index)?.name
+        LibraryTab.Songs -> state.songs.getOrNull(index)?.artist
+        else -> null
+    }
+    return name?.let(::alphabetIndexKey)
+}
 
 /**
  * The library surface: status strip, toolbar, optional scan/filter bars, the
@@ -56,6 +104,7 @@ fun LibraryScreen(
     onClearQuery: () -> Unit,
     onClearFilters: () -> Unit,
     onOpenSources: () -> Unit,
+    onGrantMediaAccess: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onNewPlaylist: () -> Unit,
@@ -79,50 +128,40 @@ fun LibraryScreen(
     val scope = rememberCoroutineScope()
     val gridState = rememberLazyGridState()
     val songsState = rememberLazyListState()
+    var currentLetter by remember { mutableStateOf<String?>(null) }
+    var indexTargets by remember { mutableStateOf(emptyMap<String, Int>()) }
+    LaunchedEffect(state.tab, state.albums, state.artists, state.songs) {
+        indexTargets = withContext(Dispatchers.Default) { alphabetTargets(state) }
+    }
     val artworkLoader = LocalArtworkLoader.current
     val visibleGridIndices by remember(gridState) {
         derivedStateOf { gridState.layoutInfo.visibleItemsInfo.mapTo(HashSet()) { it.index } }
     }
     val revealedTileKeys = remember { HashSet<String>() }
-    val tracksById = state.tracksById
+    val playlistTrackCountsById = state.playlistTrackCountsById
+    val playlistFirstArtIdById = state.playlistFirstArtIdById
     val albumsByGenre = state.albumsByGenre
-    val galleryArtwork = remember(
-        state.tab, state.albums, state.artists, state.genres, state.playlists, tracksById, albumsByGenre,
+    LaunchedEffect(
+        artworkLoader, state.tab, state.albums, state.artists, state.genres, state.playlists,
+        playlistFirstArtIdById, albumsByGenre, state.prefs.highArt, columns,
     ) {
-        when (state.tab) {
-            LibraryTab.Albums -> state.albums.map { item ->
-                GalleryItemArtwork("album:${item.key}", listOfNotNull(item.artId))
-            }
-            LibraryTab.Artists -> state.artists.map { item ->
-                GalleryItemArtwork("artist:${item.key}", listOfNotNull(item.artId, item.rearArtId))
-            }
-            LibraryTab.Genres -> state.genres.map { genre ->
-                val albums = albumsByGenre[genre].orEmpty()
-                GalleryItemArtwork("genre:$genre", listOfNotNull(albums.getOrNull(0)?.artId, albums.getOrNull(1)?.artId))
-            }
-            LibraryTab.Playlists -> state.playlists.map { playlist ->
-                val artId = playlist.ids().firstNotNullOfOrNull { tracksById[it]?.artId }
-                GalleryItemArtwork("playlist:${playlist.id}", listOfNotNull(artId))
-            }
-            LibraryTab.Songs -> emptyList()
-        }
-    }
-
-    LaunchedEffect(artworkLoader, state.tab, galleryArtwork, state.prefs.highArt, columns) {
         val loader = artworkLoader ?: return@LaunchedEffect
         if (state.tab == LibraryTab.Songs) return@LaunchedEffect
+        val galleryArtwork = withContext(Dispatchers.Default) {
+            buildGalleryArtwork(state.tab, state.albums, state.artists, state.genres, state.playlists, playlistFirstArtIdById, albumsByGenre)
+        }
         snapshotFlow {
-            val layoutInfo = gridState.layoutInfo
-            val visible = layoutInfo.visibleItemsInfo
+            val visible = gridState.layoutInfo.visibleItemsInfo
             if (visible.isEmpty() || galleryArtwork.isEmpty()) emptyList()
             else {
-                val first = visible.first().index
-                val last = (visible.last().index + columns * 2).coerceAtMost(galleryArtwork.lastIndex)
-                (first..last).flatMap { galleryArtwork.getOrNull(it)?.artIds.orEmpty() }.distinct()
+                val first = visible.minOf { it.index }.coerceAtLeast(0)
+                val last = (visible.maxOf { it.index } + columns * 2).coerceAtMost(galleryArtwork.lastIndex)
+                if (first > last) emptyList()
+                else (first..last).flatMap { galleryArtwork.getOrNull(it)?.artIds.orEmpty() }.distinct()
             }
         }.distinctUntilChanged().collectLatest { artIds ->
-            // Use a slight delay before preloading during fast flings to avoid churn
-            delay(32) 
+            // Let fast scrolls settle before prefetching covers that may already be off-screen.
+            delay(70)
             preloadArtwork(loader, artIds, small = !state.prefs.highArt)
         }
     }
@@ -140,6 +179,7 @@ fun LibraryScreen(
                 else (first..last).mapNotNull { state.songs.getOrNull(it - 1)?.artId }.distinct()
             }
         }.distinctUntilChanged().collectLatest { artIds ->
+            delay(70)
             preloadArtwork(loader, artIds, small = true)
         }
     }
@@ -149,9 +189,14 @@ fun LibraryScreen(
         else gridState.scrollToItem(0)
     }
 
+    LaunchedEffect(state.tab, state.albums, state.artists, state.songs) {
+        snapshotFlow { firstVisibleAlphabetLetter(state, gridState, songsState) }
+            .distinctUntilChanged()
+            .collect { currentLetter = it }
+    }
+
     Column(modifier.fillMaxSize()) {
-        // Removed StatusStrip() to achieve true edge-to-edge fullscreen as requested.
-        // The native status bar is already hidden in MainActivity.
+        StatusStrip()
         LibraryToolbar(
             query = state.query,
             selectedTab = TABS.indexOf(state.tab.name).coerceAtLeast(0),
@@ -184,14 +229,22 @@ fun LibraryScreen(
                 .background(P.Library),
         ) {
             when {
-                !state.hasLibrary && state.scan == null && state.booted -> EmptyState(
-                    icon = SIcon.Folder,
-                    title = "Your music, on your device",
-                    body = "Choose the folder where you keep your music. Songs are read straight from your storage - nothing is uploaded.",
-                    actionLabel = "Choose Music Folder",
-                    onAction = onChooseFolder,
-                    modifier = Modifier.align(Alignment.Center),
-                )
+                !state.hasLibrary && state.scan == null && state.booted -> {
+                    val needsMediaAccess = !state.mediaStorePermission
+                    EmptyState(
+                        icon = if (needsMediaAccess) SIcon.Library else SIcon.Folder,
+                        title = "Your music, on your device",
+                        body = if (needsMediaAccess) {
+                            "Allow device-music access to index local audio, or choose a folder in Sources. Your original files are never changed or uploaded."
+                        } else {
+                            "Choose the folder where you keep your music. Songs are read straight from your storage - nothing is uploaded."
+                        },
+                        actionLabel = if (needsMediaAccess) "Allow Device Music Access" else "Choose Music Folder",
+                        actionIcon = if (needsMediaAccess) SIcon.Library else SIcon.Folder,
+                        onAction = if (needsMediaAccess) onGrantMediaAccess else onChooseFolder,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
 
                 state.hasLibrary && state.tab == LibraryTab.Songs && state.songs.isEmpty() -> EmptyState(
                     icon = SIcon.Search,
@@ -325,12 +378,12 @@ fun LibraryScreen(
                                 state.playlists,
                                 key = { _, playlist -> "playlist:${playlist.id}" },
                             ) { index, playlist ->
-                                val ids = playlist.ids()
-                                val first = ids.firstNotNullOfOrNull { tracksById[it] }
+                                val songCount = playlistTrackCountsById[playlist.id] ?: 0
+                                val firstArtId = playlistFirstArtIdById[playlist.id]
                                 GalleryTile(
                                     label = playlist.name,
-                                    detail = "${ids.size} Songs",
-                                    artId = first?.artId,
+                                    detail = "$songCount Songs",
+                                    artId = firstArtId,
                                     rearArtId = null,
                                     coverSize = cover,
                                     index = index,
@@ -371,25 +424,35 @@ fun LibraryScreen(
                 }
             }
 
-            val indexVisible = state.hasLibrary && state.prefs.showIndex &&
-                state.tab in listOf(LibraryTab.Albums, LibraryTab.Artists, LibraryTab.Songs)
+            val indexVisible = state.prefs.showIndex && when (state.tab) {
+                LibraryTab.Albums -> state.albums.isNotEmpty()
+                LibraryTab.Artists -> state.artists.isNotEmpty()
+                LibraryTab.Songs -> state.songs.isNotEmpty()
+                else -> false
+            }
             if (indexVisible) {
                 AlphabetIndex(
                     letters = ALPHABET,
+                    currentLetter = currentLetter,
                     wide = widthDp >= 640.dp,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .padding(end = if (widthDp >= 640.dp) D.indexRightWide else D.indexRight)
                         .fillMaxHeight(0.80f),
-                ) { letter ->
-                    scope.launch {
-                        val target = jumpTarget(state, letter)
-                        if (target == null) {
-                            onToast("Nothing starting with $letter.")
-                        } else if (state.tab == LibraryTab.Songs) {
-                            songsState.animateScrollToItem(target + 1) // +1 for the sticky header
-                        } else {
-                            gridState.animateScrollToItem(target)
+                ) { letter, isDrag ->
+                    val target = indexTargets[letter]
+                    if (target == null) {
+                        if (!isDrag) onToast("Nothing starting with $letter.")
+                    } else {
+                        currentLetter = letter
+                        scope.launch {
+                            if (state.tab == LibraryTab.Songs) {
+                                if (isDrag) songsState.scrollToItem(target + 1)
+                                else songsState.animateScrollToItem(target + 1) // +1 for sticky header
+                            } else {
+                                if (isDrag) gridState.scrollToItem(target)
+                                else gridState.animateScrollToItem(target)
+                            }
                         }
                     }
                 }
@@ -406,7 +469,28 @@ fun LibraryScreen(
     }
 }
 
-private data class GalleryItemArtwork(val revealKey: String, val artIds: List<String>)
+private data class GalleryItemArtwork(val artIds: List<String>)
+
+private fun buildGalleryArtwork(
+    tab: LibraryTab,
+    albums: List<AlbumGroup>,
+    artists: List<ArtistGroup>,
+    genres: List<String>,
+    playlists: List<PlaylistEntity>,
+    playlistFirstArtIdById: Map<String, String?>,
+    albumsByGenre: Map<String, List<AlbumGroup>>,
+): List<GalleryItemArtwork> = when (tab) {
+    LibraryTab.Albums -> albums.map { item -> GalleryItemArtwork(listOfNotNull(item.artId)) }
+    LibraryTab.Artists -> artists.map { item -> GalleryItemArtwork(listOfNotNull(item.artId, item.rearArtId)) }
+    LibraryTab.Genres -> genres.map { genre ->
+        val genreAlbums = albumsByGenre[genre].orEmpty()
+        GalleryItemArtwork(listOfNotNull(genreAlbums.getOrNull(0)?.artId, genreAlbums.getOrNull(1)?.artId))
+    }
+    LibraryTab.Playlists -> playlists.map { playlist ->
+        GalleryItemArtwork(listOfNotNull(playlistFirstArtIdById[playlist.id]))
+    }
+    LibraryTab.Songs -> emptyList()
+}
 
 private suspend fun preloadArtwork(loader: ArtworkLoader, artIds: List<String>, small: Boolean) = coroutineScope {
     val permits = Semaphore(4)
@@ -425,19 +509,6 @@ private suspend fun preloadArtwork(loader: ArtworkLoader, artIds: List<String>, 
     }.awaitAll()
 }
 
-private fun jumpTarget(state: LibraryUiState, letter: String): Int? {
-    fun matches(value: String): Boolean {
-        val first = value.trimStart().firstOrNull()?.lowercaseChar() ?: return false
-        return if (letter == "#") !first.isLetter() else first.toString() == letter.lowercase()
-    }
-    val index = when (state.tab) {
-        LibraryTab.Songs -> state.songs.indexOfFirst { matches(com.sundown.player.nativecore.SundownCore.sortName(it.artist)) }
-        LibraryTab.Artists -> state.artists.indexOfFirst { matches(com.sundown.player.nativecore.SundownCore.sortName(it.name)) }
-        else -> state.albums.indexOfFirst { matches(com.sundown.player.nativecore.SundownCore.sortName(it.artist)) }
-    }
-    return index.takeIf { it >= 0 }
-}
-
 fun TrackEntity.toRowModel() = SongRowModel(
     id = id,
     title = title,
@@ -448,13 +519,16 @@ fun TrackEntity.toRowModel() = SongRowModel(
 )
 
 /** Branded strip only; the native status bar is hidden rather than faked. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun StatusStrip() {
     Box(
         Modifier
             .fillMaxWidth()
             .background(P.StatusBg)
-            .windowInsetsPadding(WindowInsets.statusBars)
+            // The real status bar is immersive-hidden, so statusBars may be
+            // zero. Keep the strip behind the notch/camera safe area anyway.
+            .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout))
             .height(D.statusHeight),
     ) {
         val style = TextStyle(
@@ -546,7 +620,12 @@ private fun LibraryToolbar(
             }
             SegmentedControl(
                 TABS, selectedTab, Modifier.fillMaxWidth(),
-                fontSize = if (narrow) 11.5f else 13f, onSelect = onTab,
+                fontSize = 13f,
+                // Preserve the label size on compact phones; give the longest label
+                // a wider cell and reclaim a few dp from each segment's side padding.
+                horizontalPadding = if (narrow) 3.dp else D.segmentPadH,
+                weights = if (narrow) COMPACT_TAB_WEIGHTS else null,
+                onSelect = onTab,
             )
         }
     }

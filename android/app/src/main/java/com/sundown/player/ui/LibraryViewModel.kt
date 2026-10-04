@@ -8,17 +8,22 @@ import com.sundown.player.data.ArtworkStore
 import com.sundown.player.data.LibraryRepository
 import com.sundown.player.data.ScanProgress
 import com.sundown.player.data.SearchIndex
+import com.sundown.player.data.matchesSearch
 import com.sundown.player.data.db.PlaylistEntity
 import com.sundown.player.data.db.TrackEntity
 import com.sundown.player.data.prefs.Prefs
 import com.sundown.player.data.prefs.SundownPrefs
 import com.sundown.player.nativecore.SundownCore
+import com.sundown.player.playback.PlaybackProgress
 import com.sundown.player.playback.PlayerController
 import com.sundown.player.playback.PlayerSnapshot
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -55,15 +60,22 @@ data class LibraryUiState(
     val artistFilter: String? = null,
     val favoritesOnly: Boolean = false,
     val tracks: List<TrackEntity> = emptyList(),
+    val sessionTrackCount: Int = 0,
     val allAlbums: List<AlbumGroup> = emptyList(),
+    val allAlbumsByKey: Map<String, AlbumGroup> = emptyMap(),
     val albums: List<AlbumGroup> = emptyList(),
     val allArtists: List<ArtistGroup> = emptyList(),
+    val allArtistsByKey: Map<String, ArtistGroup> = emptyMap(),
     val artists: List<ArtistGroup> = emptyList(),
     val tracksById: Map<String, TrackEntity> = emptyMap(),
     val albumsByGenre: Map<String, List<AlbumGroup>> = emptyMap(),
     val genres: List<String> = emptyList(),
     val songs: List<TrackEntity> = emptyList(),
     val playlists: List<PlaylistEntity> = emptyList(),
+    val playlistsById: Map<String, PlaylistEntity> = emptyMap(),
+    val playlistTrackCountsById: Map<String, Int> = emptyMap(),
+    val playlistTrackIdSetsById: Map<String, Set<String>> = emptyMap(),
+    val playlistFirstArtIdById: Map<String, String?> = emptyMap(),
     val favorites: Set<String> = emptySet(),
     val prefs: Prefs = Prefs(),
     val scan: ScanProgress? = null,
@@ -76,16 +88,18 @@ data class LibraryUiState(
         get() = when {
             favoritesOnly -> "Favorites"
             genreFilter != null -> genreFilter
-            artistFilter != null -> allArtists.firstOrNull { it.key == artistFilter }?.name.orEmpty()
+            artistFilter != null -> allArtistsByKey[artistFilter]?.name.orEmpty()
             else -> ""
         }
 }
 
+@OptIn(FlowPreview::class)
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefsStore = SundownPrefs(app)
     val artwork = ArtworkStore(app)
     private val repo = LibraryRepository(app, prefsStore, artwork)
+    private val mediaStorePermission = MutableStateFlow(repo.mediaStorePermissionGranted)
     private val searchIndex = SearchIndex(app)
     val player = PlayerController(app, artwork)
     val libraryPlaybackState: StateFlow<LibraryPlaybackState> = player.state
@@ -102,6 +116,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val booted = MutableStateFlow(false)
 
     val playerState: StateFlow<PlayerSnapshot> get() = player.state
+    val playbackProgress: StateFlow<PlaybackProgress> get() = player.progress
+    val queueState: StateFlow<List<TrackEntity>> get() = player.queueState
 
     private data class UserFilters(
         val genre: String?,
@@ -126,25 +142,58 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private data class LibraryContent(
         val tracks: List<TrackEntity> = emptyList(),
+        val sortedTracks: List<TrackEntity> = emptyList(),
+        val sessionTrackCount: Int = 0,
         val allAlbums: List<AlbumGroup> = emptyList(),
+        val allAlbumsByKey: Map<String, AlbumGroup> = emptyMap(),
         val allArtists: List<ArtistGroup> = emptyList(),
+        val allArtistsByKey: Map<String, ArtistGroup> = emptyMap(),
         val genres: List<String> = emptyList(),
         val tracksById: Map<String, TrackEntity> = emptyMap(),
         val albumsByGenre: Map<String, List<AlbumGroup>> = emptyMap(),
-        val sortNameByTrackId: Map<String, String> = emptyMap(),
+    )
+
+    private data class SortableTrack(
+        val track: TrackEntity,
+        val artist: String,
+        val album: String,
+        val discNo: Int,
+        val trackNo: Int,
+        val title: String,
+    )
+
+    private data class PlaylistContent(
+        val playlists: List<PlaylistEntity> = emptyList(),
+        val trackIdsById: Map<String, List<String>> = emptyMap(),
+        val trackCountsById: Map<String, Int> = emptyMap(),
+        val trackIdSetsById: Map<String, Set<String>> = emptyMap(),
+    )
+
+    private data class PlaylistPresentation(
+        val playlists: List<PlaylistEntity> = emptyList(),
+        val trackCountsById: Map<String, Int> = emptyMap(),
+        val trackIdSetsById: Map<String, Set<String>> = emptyMap(),
+        val firstArtIdById: Map<String, String?> = emptyMap(),
     )
 
     private data class FilteredContent(
         val tracks: List<TrackEntity> = emptyList(),
+        val sessionTrackCount: Int = 0,
         val allAlbums: List<AlbumGroup> = emptyList(),
+        val allAlbumsByKey: Map<String, AlbumGroup> = emptyMap(),
         val albums: List<AlbumGroup> = emptyList(),
         val allArtists: List<ArtistGroup> = emptyList(),
+        val allArtistsByKey: Map<String, ArtistGroup> = emptyMap(),
         val artists: List<ArtistGroup> = emptyList(),
         val genres: List<String> = emptyList(),
         val tracksById: Map<String, TrackEntity> = emptyMap(),
         val albumsByGenre: Map<String, List<AlbumGroup>> = emptyMap(),
         val songs: List<TrackEntity> = emptyList(),
         val playlists: List<PlaylistEntity> = emptyList(),
+        val playlistsById: Map<String, PlaylistEntity> = emptyMap(),
+        val playlistTrackCountsById: Map<String, Int> = emptyMap(),
+        val playlistTrackIdSetsById: Map<String, Set<String>> = emptyMap(),
+        val playlistFirstArtIdById: Map<String, String?> = emptyMap(),
         val favorites: Set<String> = emptySet(),
     )
 
@@ -170,12 +219,54 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Room invalidations are the only inputs that rebuild grouping/sort indexes.
      * Progress, playback checkpoints and transient notices cannot redo this work.
+     * The FTS index is synchronized from this exact snapshot before it becomes
+     * visible to search, so fast queries can use FTS without an O(library-size)
+     * pending-row reconciliation on every keystroke.
      */
     private val libraryContent: StateFlow<LibraryContent> = repo.tracks
-        .map(::buildLibraryContent)
         .distinctUntilChanged()
+        // A media scan commits bounded batches. Collapse rapid Room invalidations
+        // before rebuilding the full grouping/sort maps for a large library.
+        .conflate()
+        .debounce(160)
+        .map { tracks ->
+            withContext(Dispatchers.IO) { searchIndex.synchronize(tracks) }
+            buildLibraryContent(tracks)
+        }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, LibraryContent())
+
+    /** Parse serialized playlist IDs once per Room playlist snapshot, not per search keystroke. */
+    private val playlistContent: StateFlow<PlaylistContent> = repo.playlists
+        .distinctUntilChanged()
+        .map { playlists ->
+            val idsById = playlists.associate { playlist -> playlist.id to playlist.ids() }
+            PlaylistContent(
+                playlists = playlists,
+                trackIdsById = idsById,
+                trackCountsById = idsById.mapValues { (_, ids) -> ids.size },
+                trackIdSetsById = idsById.mapValues { (_, ids) -> ids.toHashSet() },
+            )
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlaylistContent())
+
+    /** Resolve cover references only when Room tracks or playlist data actually changes. */
+    private val playlistPresentation: StateFlow<PlaylistPresentation> = combine(
+        playlistContent,
+        libraryContent.map { it.tracksById }.distinctUntilChanged(),
+    ) { playlists, tracksById ->
+        PlaylistPresentation(
+            playlists = playlists.playlists,
+            trackCountsById = playlists.trackCountsById,
+            trackIdSetsById = playlists.trackIdSetsById,
+            firstArtIdById = playlists.trackIdsById.mapValues { (_, ids) ->
+                ids.firstNotNullOfOrNull { tracksById[it]?.artId }
+            },
+        )
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlaylistPresentation())
 
     /** Checkpoint writes update playback fields every couple seconds; the UI state
      * intentionally projects those out so only actual UI preferences invalidate it. */
@@ -199,30 +290,42 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val filteredContent: StateFlow<FilteredContent> = combine(
         libraryContent,
-        repo.playlists,
+        playlistPresentation,
         contentFilters,
         favoriteSet,
     ) { library, playlists, filters, favorites ->
+        // Search touches only playlist names. Serialized track IDs, membership
+        // sets, counts and artwork picks are cached per Room snapshot above.
+        val visiblePlaylists = if (filters.search.isBlank()) playlists.playlists
+            else playlists.playlists.filter { it.name.contains(filters.search, ignoreCase = true) }
         FilteredContent(
             tracks = library.tracks,
+            sessionTrackCount = library.sessionTrackCount,
             allAlbums = library.allAlbums,
+            allAlbumsByKey = library.allAlbumsByKey,
             albums = filterAlbums(library.allAlbums, filters, favorites),
             allArtists = library.allArtists,
+            allArtistsByKey = library.allArtistsByKey,
             artists = filterArtists(library.allArtists, filters, favorites),
             genres = if (filters.search.isBlank()) library.genres
                 else library.genres.filter { it.contains(filters.search, ignoreCase = true) },
             tracksById = library.tracksById,
             albumsByGenre = library.albumsByGenre,
-            songs = filterSongs(library.tracks, filters, favorites, library.sortNameByTrackId),
-            playlists = if (filters.search.isBlank()) playlists
-                else playlists.filter { it.name.contains(filters.search, ignoreCase = true) },
+            songs = filterSongs(library.sortedTracks, library.tracks, filters, favorites),
+            playlists = visiblePlaylists,
+            playlistsById = visiblePlaylists.associateBy(PlaylistEntity::id),
+            playlistTrackCountsById = playlists.trackCountsById,
+            playlistTrackIdSetsById = playlists.trackIdSetsById,
+            playlistFirstArtIdById = playlists.firstArtIdById,
             favorites = favorites,
         )
     }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, FilteredContent())
 
-    val state: StateFlow<LibraryUiState> = combine(filteredContent, uiPrefs, repo.progress, localState) { content, prefs, scan, local ->
+    val state: StateFlow<LibraryUiState> = combine(
+        filteredContent, uiPrefs, repo.progress, localState, mediaStorePermission,
+    ) { content, prefs, scan, local, permissionGranted ->
         LibraryUiState(
             booted = local.booted,
             tab = local.tab,
@@ -231,20 +334,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             artistFilter = local.filters.artist,
             favoritesOnly = local.filters.favoritesOnly,
             tracks = content.tracks,
+            sessionTrackCount = content.sessionTrackCount,
             allAlbums = content.allAlbums,
+            allAlbumsByKey = content.allAlbumsByKey,
             albums = content.albums,
             allArtists = content.allArtists,
+            allArtistsByKey = content.allArtistsByKey,
             artists = content.artists,
             tracksById = content.tracksById,
             albumsByGenre = content.albumsByGenre,
             genres = content.genres,
             songs = content.songs,
             playlists = content.playlists,
+            playlistsById = content.playlistsById,
+            playlistTrackCountsById = content.playlistTrackCountsById,
+            playlistTrackIdSetsById = content.playlistTrackIdSetsById,
+            playlistFirstArtIdById = content.playlistFirstArtIdById,
             favorites = content.favorites,
             prefs = prefs,
             scan = scan,
             notice = local.notice,
-            mediaStorePermission = repo.mediaStorePermissionGranted,
+            mediaStorePermission = permissionGranted,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryUiState())
 
@@ -253,22 +363,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             repo.messages.collect { message -> toast(message) }
         }
         viewModelScope.launch {
-            var indexedSignature: Int? = null
-            repo.tracks.collect { tracks ->
-                val signature = tracks.fold(1) { acc, track ->
-                    31 * acc + track.id.hashCode()
-                    31 * acc + track.size.hashCode()
-                    31 * acc + track.mtime.hashCode()
-                    31 * acc + track.title.hashCode()
-                    31 * acc + track.artist.hashCode()
-                    31 * acc + track.album.hashCode()
-                    31 * acc + track.genre.hashCode()
+            repo.mediaStoreChanges
+                .debounce(750)
+                .catch { error ->
+                    if (error !is CancellationException) {
+                        toast(error.message ?: "Automatic device-library updates are unavailable.")
+                    }
                 }
-                if (signature != indexedSignature) {
-                    searchIndex.rebuild(tracks)
-                    indexedSignature = signature
+                .collect {
+                    if (repo.mediaStorePermissionGranted) {
+                        repo.rescanMediaStore(waitForScan = true, notify = false)
+                    }
                 }
-            }
         }
         viewModelScope.launch {
             try {
@@ -289,22 +395,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
+        player.beginQueueRestoration()
         player.onError = ::toast
         player.onDurationResolved = { id, seconds ->
-            viewModelScope.launch { runCatching { repo.updateDuration(id, seconds) } }
+            viewModelScope.launch {
+                try {
+                    repo.updateDuration(id, seconds)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // A duration refresh is opportunistic; a failed write is retried on a later scan.
+                }
+            }
         }
         player.connect {
             viewModelScope.launch { restorePlayback() }
         }
 
-        // The service owns playback when the UI is backgrounded. While the app
-        // is visible, persist a checkpoint so process death resumes near the
-        // last position rather than at the beginning of a track.
-        viewModelScope.launch {
-            player.state.sample(2_000).collect { snapshot ->
-                if (snapshot.hasSource) persistSnapshot(snapshot)
-            }
-        }
     }
 
     private suspend fun restorePlayback() {
@@ -314,25 +421,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             player.setShuffleEnabled(prefs.shuffle)
             player.setRepeatMode(prefs.repeat)
 
-            val allTracks = repo.tracks.first()
-            // A MediaSession can outlive this Activity/ViewModel. Reattach Room
-            // metadata to that live queue instead of replacing the song that is
-            // already playing with an older DataStore checkpoint.
-            if (player.attachTracks(allTracks)) return
-
-            val byId = allTracks.associateBy(TrackEntity::id)
-            val queue = prefs.queue.mapNotNull(byId::get).distinctBy(TrackEntity::id).toMutableList()
-            val current = prefs.currentId?.let(byId::get)
-            if (current != null && queue.none { it.id == current.id }) queue.add(0, current)
-            if (queue.isNotEmpty()) {
-                val index = queue.indexOfFirst { it.id == prefs.currentId }.takeIf { it >= 0 } ?: 0
-                player.restore(queue, index, prefs.position.coerceAtLeast(0L))
+            // A MediaSession can outlive this Activity/ViewModel. Fetch only its
+            // queue rows and reattach them rather than materializing every Room
+            // track just to update playback metadata.
+            val liveQueueTracks = repo.tracksByIds(player.sessionQueueIds())
+            if (!player.attachTracks(liveQueueTracks)) {
+                val savedTracks = repo.tracksByIds(prefs.queue + listOfNotNull(prefs.currentId))
+                val (queue, index) = withContext(Dispatchers.Default) {
+                    val byId = savedTracks.associateBy(TrackEntity::id)
+                    val queue = prefs.queue.mapNotNull(byId::get).distinctBy(TrackEntity::id).toMutableList()
+                    val current = prefs.currentId?.let(byId::get)
+                    if (current != null && queue.none { it.id == current.id }) queue.add(0, current)
+                    queue to (queue.indexOfFirst { it.id == prefs.currentId }.takeIf { it >= 0 } ?: 0)
+                }
+                if (queue.isNotEmpty()) player.restore(queue, index, prefs.position.coerceAtLeast(0L))
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             toast(error.message ?: "The saved playback queue could not be restored.")
         }
+        if (player.finishQueueRestoration()) persistSnapshot(player.state.value)
     }
 
     // ---- grouping and filtering --------------------------------------------
@@ -345,15 +454,34 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             .map(TrackEntity::artist)
             .distinct()
             .associateWith(::sortName)
+        val sortNameByTrackId = tracks.associate { it.id to (trackSortNames[it.artist] ?: "") }
+        // The Songs tab has a fixed order. Sort once per Room snapshot rather
+        // than re-running an O(n log n) comparator on every search keystroke.
+        val sortedTracks = tracks.map { track ->
+            SortableTrack(
+                track = track,
+                artist = sortNameByTrackId[track.id].orEmpty(),
+                album = track.album.lowercase(),
+                discNo = track.discNo,
+                trackNo = track.trackNo,
+                title = track.title.lowercase(),
+            )
+        }.sortedWith(compareBy<SortableTrack>({ it.artist }, { it.album }, { it.discNo }, { it.trackNo }, { it.title }))
+            .map(SortableTrack::track)
 
         return LibraryContent(
             tracks = tracks,
+            sortedTracks = sortedTracks,
+            // Sources must not walk the full library on the main thread just to
+            // count individually selected files every time its sheet recomposes.
+            sessionTrackCount = tracks.count { it.source == LibraryRepository.SOURCE_FILE },
             allAlbums = allAlbums,
+            allAlbumsByKey = allAlbums.associateBy(AlbumGroup::key),
             allArtists = allArtists,
+            allArtistsByKey = allArtists.associateBy(ArtistGroup::key),
             genres = genres,
             tracksById = tracks.associateBy(TrackEntity::id),
             albumsByGenre = allAlbums.filter { it.genre.isNotBlank() }.groupBy(AlbumGroup::genre),
-            sortNameByTrackId = tracks.associate { it.id to (trackSortNames[it.artist] ?: sortName(it.artist)) },
         )
     }
 
@@ -404,27 +532,21 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun filterSongs(
-        tracks: List<TrackEntity>,
+        sortedTracks: List<TrackEntity>,
+        searchSnapshot: List<TrackEntity>,
         filter: ContentFilters,
         favorites: Set<String>,
-        sortNameByTrackId: Map<String, String>,
-    ) = run {
-        val ftsIds = if (filter.search.isBlank()) null else searchIndex.search(filter.search)
-        tracks.filter { track ->
+    ): List<TrackEntity> {
+        val ftsIds = if (filter.search.isBlank()) null else searchIndex.search(filter.search, searchSnapshot)
+        // sortedTracks preserves the library's stable sort order, so filtering
+        // is linear and does not re-sort the full result on every query change.
+        return sortedTracks.filter { track ->
             (filter.artist == null || track.artistKey == filter.artist) &&
                 (filter.genre == null || track.genre == filter.genre) &&
                 (!filter.favoritesOnly || track.albumKey in favorites) &&
                 (filter.search.isBlank() ||
-                    (ftsIds?.contains(track.id) ?: "${track.title} ${track.artist} ${track.album} ${track.genre}".contains(filter.search, true)))
-        }.sortedWith(
-            compareBy(
-                { sortNameByTrackId[it.id].orEmpty() },
-                { it.album.lowercase() },
-                { it.discNo },
-                { it.trackNo },
-                { it.title.lowercase() },
-            ),
-        )
+                    ((ftsIds == null || track.id in ftsIds) && track.matchesSearch(filter.search)))
+        }
     }
 
     // ---- UI intents ---------------------------------------------------------
@@ -500,11 +622,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun persistSnapshot(snapshot: PlayerSnapshot) {
+        val queueIds = player.queueIds()
+        val position = player.progress.value.elapsedMs.coerceAtLeast(0L)
         prefsStore.update { current ->
             current.copy(
-                queue = snapshot.queueIds.ifEmpty { current.queue },
-                currentId = snapshot.trackId ?: current.currentId,
-                position = snapshot.elapsedMs.coerceAtLeast(0L),
+                queue = queueIds,
+                currentId = snapshot.trackId,
+                position = position,
                 volume = if (snapshot.muted) current.volume else snapshot.volume,
                 muted = snapshot.muted,
                 shuffle = snapshot.shuffle,
@@ -514,6 +638,31 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---- library management -------------------------------------------------
+
+    /** Atomically consumes the one-time first-launch permission prompt. */
+    suspend fun consumeStartupAudioPermissionPrompt(): Boolean {
+        var shouldPrompt = false
+        prefsStore.update { current ->
+            if (current.audioPermissionPrompted) current
+            else {
+                shouldPrompt = true
+                current.copy(audioPermissionPrompted = true)
+            }
+        }
+        return shouldPrompt
+    }
+
+    suspend fun markAudioPermissionPrompted() {
+        prefsStore.update { it.copy(audioPermissionPrompted = true) }
+    }
+
+    /** Re-reads Android's live permission state; never treats DataStore as a grant. */
+    fun refreshMediaStorePermission(scanIfAlreadyGranted: Boolean = false) {
+        val granted = repo.mediaStorePermissionGranted
+        val changed = mediaStorePermission.value != granted
+        if (changed) mediaStorePermission.value = granted
+        if (granted && (changed || scanIfAlreadyGranted)) rescanDeviceMusic(waitForScan = true)
+    }
 
     fun connectFolder(uri: Uri) = viewModelScope.launch { repo.connectFolder(uri) }
     fun rescan() = viewModelScope.launch {
@@ -527,7 +676,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         repo.disconnectFolder(prefsStore.flow.first().treeUri)
     }
     fun ingestFiles(uris: List<Uri>) = viewModelScope.launch { repo.ingestFiles(uris) }
-    fun rescanDeviceMusic() = viewModelScope.launch { repo.rescanMediaStore() }
+    fun rescanDeviceMusic(waitForScan: Boolean = false) = viewModelScope.launch {
+        repo.rescanMediaStore(waitForScan = waitForScan)
+    }
     fun clearArtwork() = viewModelScope.launch { repo.clearArtwork() }
     fun eraseEverything() = viewModelScope.launch {
         player.clearQueue()
@@ -535,11 +686,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun savePlaylist(id: String?, name: String, trackIds: List<String>) = viewModelScope.launch {
+        val serializedIds = withContext(Dispatchers.Default) { trackIds.distinct().joinToString("\n") }
         repo.savePlaylist(
             PlaylistEntity(
                 id = id ?: "pl-${UUID.randomUUID()}",
                 name = name,
-                trackIds = trackIds.distinct().joinToString("\n"),
+                trackIds = serializedIds,
                 custom = true,
             ),
         )
@@ -547,9 +699,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addToPlaylist(playlist: PlaylistEntity, trackId: String) = viewModelScope.launch {
-        val ids = playlist.trackIds.split('\n').filter { it.isNotBlank() }
-        if (trackId in ids) return@launch
-        repo.savePlaylist(playlist.copy(trackIds = (ids + trackId).joinToString("\n")))
+        val updatedIds = withContext(Dispatchers.Default) {
+            val ids = playlist.trackIds.split('\n').filter { it.isNotBlank() }
+            if (trackId in ids) null else (ids + trackId).joinToString("\n")
+        } ?: return@launch
+        repo.savePlaylist(playlist.copy(trackIds = updatedIds))
         toast("Added to ${playlist.name}.")
     }
 
@@ -558,21 +712,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         toast("Playlist deleted.")
     }
 
-    fun hasFolderAccess(treeUri: String?) = repo.hasFolderAccess(treeUri)
+    suspend fun hasFolderAccess(treeUri: String?) = repo.hasFolderAccess(treeUri)
 
     // ---- queue --------------------------------------------------------------
 
     fun queueTracks(): List<TrackEntity> = player.queueTracks()
-    fun jumpToQueued(track: TrackEntity) = player.jumpTo(track.id)
-    fun removeFromQueue(track: TrackEntity) = player.removeFromQueue(track.id)
+    fun jumpToQueued(track: TrackEntity) {
+        if (player.jumpTo(track.id)) persistPlaybackState()
+    }
+    fun removeFromQueue(track: TrackEntity) {
+        if (player.removeFromQueue(track.id)) persistPlaybackState()
+    }
     fun clearQueue() {
         player.clearQueue()
+        viewModelScope.launch {
+            prefsStore.update { it.copy(queue = emptyList(), currentId = null, position = 0L) }
+        }
         toast("Queue cleared.")
     }
 
     fun enqueue(tracks: List<TrackEntity>, label: String) {
         if (tracks.isEmpty()) return
-        player.enqueue(tracks)
+        if (!player.enqueue(tracks)) {
+            toast("The playback service is reconnecting. Try adding the songs again.")
+            return
+        }
+        if (player.state.value.hasSource && !player.isQueueRestorationPending) persistPlaybackState()
         toast("Added $label to the queue.")
     }
 
@@ -580,7 +745,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         player.release()
-        searchIndex.close()
+        CoroutineScope(Dispatchers.IO).launch { searchIndex.close() }
         super.onCleared()
     }
 }

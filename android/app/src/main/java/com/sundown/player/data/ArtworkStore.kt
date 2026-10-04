@@ -7,11 +7,15 @@ import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.sundown.player.ui.components.ArtworkLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -21,16 +25,47 @@ import java.util.concurrent.atomic.AtomicLong
 /** Bounded, app-private 1024px/160px artwork previews with a coalescing bitmap cache. */
 class ArtworkStore(context: Context) : ArtworkLoader {
 
-    private val dir = File(context.filesDir, "art").apply { mkdirs() }
+    // Created lazily from write()/IO paths; constructing the store stays cheap on main.
+    private val dir = File(context.filesDir, "art")
     private val generation = AtomicLong(0L)
-    private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val inFlight = ConcurrentHashMap<String, Deferred<ImageBitmap?>>()
+    @Volatile private var missingArtworkProvider: (suspend (String, Boolean) -> ByteArray?)? = null
+    // Bound concurrent bitmap decoding across visible and prefetched artwork.
+    private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(2))
+
+    private class ArtworkFlight(val task: Deferred<ImageBitmap?>) {
+        private var waiters = 0
+
+        @Synchronized
+        fun acquire(): Boolean {
+            if (task.isCompleted || task.isCancelled) return false
+            waiters += 1
+            return true
+        }
+
+        @Synchronized
+        fun release() {
+            if (waiters > 0) waiters -= 1
+            if (waiters == 0 && !task.isCompleted) task.cancel()
+        }
+    }
+
+    private val inFlight = ConcurrentHashMap<String, ArtworkFlight>()
     private val cache = object : LruCache<String, ImageBitmap>(cacheCapacityBytes()) {
         override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4
     }
 
     fun has(artId: String): Boolean =
-        fileForLarge(artId).isFile && (fileForSmallWebp(artId).isFile || fileForSmallJpeg(artId).isFile)
+        fileForLarge(artId).let { it.isFile && it.length() > 0L } &&
+            (fileForSmallWebp(artId).let { it.isFile && it.length() > 0L } ||
+                fileForSmallJpeg(artId).let { it.isFile && it.length() > 0L })
+
+    /** LRU-evicted IDs are intentionally not rebuilt during every library scan. */
+    fun needsRebuild(artId: String): Boolean = !has(artId) && !evictionMarker(artId).isFile
+
+    /** Resolve an LRU-evicted cover lazily from its still-local audio source. */
+    fun setMissingArtworkProvider(provider: suspend (artId: String, small: Boolean) -> ByteArray?) {
+        missingArtworkProvider = provider
+    }
 
     suspend fun write(artId: String, large: ByteArray, small: ByteArray): Boolean = withContext(Dispatchers.IO) {
         try {
@@ -44,20 +79,87 @@ class ArtworkStore(context: Context) : ArtworkLoader {
                 atomicWrite(fileForSmallJpeg(artId), compact.bytes)
                 fileForSmallWebp(artId).delete()
             }
+            evictionMarker(artId).delete()
             cache.remove("l:$artId")
             cache.remove("s:$artId")
             true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             false
         }
     }
 
     /** High-resolution preview used for lock-screen and notification artwork. */
-    fun largeBytes(artId: String): ByteArray? =
-        runCatching { fileForLarge(artId).takeIf(File::isFile)?.readBytes() }.getOrNull()
+    suspend fun largeBytes(artId: String): ByteArray? = withContext(Dispatchers.IO) {
+        readBytesWithFallback(fileForLarge(artId), artId, small = false)
+    }
 
-    fun smallBytes(artId: String): ByteArray? =
-        runCatching { (fileForSmallWebp(artId).takeIf(File::isFile) ?: fileForSmallJpeg(artId).takeIf(File::isFile))?.readBytes() }.getOrNull()
+    suspend fun smallBytes(artId: String): ByteArray? = withContext(Dispatchers.IO) {
+        val file = fileForSmallWebp(artId).takeIf(File::isFile) ?: fileForSmallJpeg(artId)
+        readBytesWithFallback(file, artId, small = true)
+    }
+
+    private suspend fun readBytesWithFallback(file: File, artId: String, small: Boolean): ByteArray? = try {
+        file.takeIf(File::isFile)?.also(::touch)?.readBytes()
+            ?: restoredArtworkBytes(artId, small)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        restoredArtworkBytes(artId, small)
+    }
+
+    /** Removes orphaned covers and caps the on-disk cache, oldest artwork first. */
+    suspend fun prune(referencedArtIds: Set<String>) = withContext(Dispatchers.IO) {
+        val coroutineContext = currentCoroutineContext()
+        val files = dir.listFiles()?.toList().orEmpty()
+        files.filter { it.name.endsWith(".tmp") }.forEach {
+            coroutineContext.ensureActive()
+            it.delete()
+        }
+
+        val referenced = referencedArtIds.mapTo(HashSet(), ::safeId)
+        files.filter { it.name.endsWith(".evicted") }.forEach { marker ->
+            coroutineContext.ensureActive()
+            if (marker.name.removeSuffix(".evicted") !in referenced) marker.delete()
+        }
+        val groups = files.mapNotNull { file ->
+            val id = cachedArtId(file) ?: return@mapNotNull null
+            id to file
+        }.groupBy({ it.first }, { it.second })
+        groups.keys.forEach { id -> evictionMarker(id).delete() }
+        var totalBytes = groups.values.sumOf { group -> group.sumOf { it.length() } }
+
+        groups.forEach { (id, group) ->
+            coroutineContext.ensureActive()
+            if (id !in referenced) {
+                val groupBytes = group.sumOf { it.length() }
+                group.forEach { it.delete() }
+                evictionMarker(id).delete()
+                removeCachedBitmaps(id)
+                totalBytes -= groupBytes
+            }
+        }
+
+        if (totalBytes > MAX_DISK_CACHE_BYTES) {
+            groups.asSequence()
+                .filter { (id, _) -> id in referenced }
+                .sortedBy { (_, group) -> group.maxOfOrNull { it.lastModified() } ?: 0L }
+                .forEach { (id, group) ->
+                    coroutineContext.ensureActive()
+                    if (totalBytes > MAX_DISK_CACHE_BYTES) {
+                        val groupBytes = group.sumOf { it.length() }
+                        group.forEach { it.delete() }
+                        runCatching { evictionMarker(id).createNewFile() }
+                        removeCachedBitmaps(id)
+                        totalBytes -= groupBytes
+                    }
+                }
+        }
+    }
+
+    override fun cached(artId: String, small: Boolean): ImageBitmap? =
+        cache.get((if (small) "s:" else "l:") + artId)
 
     override suspend fun load(artId: String, small: Boolean): ImageBitmap? {
         val cacheKey = (if (small) "s:" else "l:") + artId
@@ -65,14 +167,29 @@ class ArtworkStore(context: Context) : ArtworkLoader {
 
         val cacheGeneration = generation.get()
         val flightKey = "$cacheGeneration:$cacheKey"
-        val task = inFlight.computeIfAbsent(flightKey) {
-            loadScope.async { decode(artId, small, cacheKey, cacheGeneration) }
+        var created = false
+        val flight = requireNotNull(inFlight.compute(flightKey) { _, existing ->
+            if (existing != null && existing.acquire()) {
+                existing
+            } else {
+                created = true
+                val task = loadScope.async(start = CoroutineStart.LAZY) {
+                    val restored = restoredArtworkBytes(artId, small)
+                    restored?.let { decodeBytes(it, cacheKey, cacheGeneration) }
+                        ?: decode(artId, small, cacheKey, cacheGeneration)
+                }
+                ArtworkFlight(task).also { check(it.acquire()) }
+            }
+        }) { "Artwork load flight was not created." }
+        if (created) {
+            flight.task.invokeOnCompletion { inFlight.remove(flightKey, flight) }
+            flight.task.start()
         }
-        task.invokeOnCompletion { inFlight.remove(flightKey, task) }
         return try {
-            task.await()
+            flight.task.await()
         } finally {
-            if (task.isCompleted) inFlight.remove(flightKey, task)
+            flight.release()
+            if (flight.task.isCompleted) inFlight.remove(flightKey, flight)
         }
     }
 
@@ -83,6 +200,22 @@ class ArtworkStore(context: Context) : ArtworkLoader {
         cache.evictAll()
         runCatching { dir.listFiles()?.forEach { it.delete() } }
         Unit
+    }
+
+    private suspend fun restoredArtworkBytes(artId: String, small: Boolean): ByteArray? {
+        if (!evictionMarker(artId).isFile) return null
+        return try {
+            missingArtworkProvider?.invoke(artId, small)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun decodeBytes(bytes: ByteArray, cacheKey: String, expectedGeneration: Long): ImageBitmap? {
+        val bitmap = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull() ?: return null
+        return cacheBitmap(bitmap, cacheKey, expectedGeneration)
     }
 
     private fun decode(
@@ -98,7 +231,12 @@ class ArtworkStore(context: Context) : ArtworkLoader {
             fileForLarge(artId)
         }
         if (!file.isFile) return null
+        touch(file)
         val bitmap = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull() ?: return null
+        return cacheBitmap(bitmap, cacheKey, expectedGeneration)
+    }
+
+    private fun cacheBitmap(bitmap: Bitmap, cacheKey: String, expectedGeneration: Long): ImageBitmap? {
         val image = runCatching { bitmap.asImageBitmap() }.getOrNull()
         if (image == null) {
             bitmap.recycle()
@@ -109,14 +247,35 @@ class ArtworkStore(context: Context) : ArtworkLoader {
     }
 
     private fun atomicWrite(destination: File, bytes: ByteArray) {
-        if (destination.isFile) return
+        if (destination.isFile && destination.length() > 0L) return
+        destination.delete()
         val temporary = File(dir, ".${destination.name}.${Thread.currentThread().id}.${System.nanoTime()}.tmp")
         temporary.writeBytes(bytes)
-        if (!temporary.renameTo(destination) && !destination.isFile) {
+        if (!temporary.renameTo(destination) && !(destination.isFile && destination.length() > 0L)) {
             temporary.delete()
             throw IllegalStateException("Could not finish writing cached cover art.")
         }
         temporary.delete()
+    }
+
+    private fun cachedArtId(file: File): String? = when {
+        file.name.endsWith("_lg.jpg") -> file.name.removeSuffix("_lg.jpg")
+        file.name.endsWith("_sm.webp") -> file.name.removeSuffix("_sm.webp")
+        file.name.endsWith("_sm.jpg") -> file.name.removeSuffix("_sm.jpg")
+        else -> null
+    }
+
+    private fun safeId(artId: String): String = artId.replace(':', '_')
+
+    private fun evictionMarker(artId: String): File = File(dir, safeId(artId) + ".evicted")
+
+    private fun removeCachedBitmaps(artId: String) {
+        cache.remove("l:$artId")
+        cache.remove("s:$artId")
+    }
+
+    private fun touch(file: File) {
+        file.setLastModified(System.currentTimeMillis())
     }
 
     private data class CompactArtwork(val extension: String, val bytes: ByteArray)
@@ -135,14 +294,15 @@ class ArtworkStore(context: Context) : ArtworkLoader {
         }
     }
 
-    private fun fileForLarge(artId: String): File = File(dir, artId.replace(':', '_') + "_lg.jpg")
-    private fun fileForSmallWebp(artId: String): File = File(dir, artId.replace(':', '_') + "_sm.webp")
-    private fun fileForSmallJpeg(artId: String): File = File(dir, artId.replace(':', '_') + "_sm.jpg")
+    private fun fileForLarge(artId: String): File = File(dir, safeId(artId) + "_lg.jpg")
+    private fun fileForSmallWebp(artId: String): File = File(dir, safeId(artId) + "_sm.webp")
+    private fun fileForSmallJpeg(artId: String): File = File(dir, safeId(artId) + "_sm.jpg")
 
     private fun cacheCapacityBytes(): Int =
         (Runtime.getRuntime().maxMemory() / 8L).coerceIn(8L * MB, 64L * MB).toInt()
 
     private companion object {
         const val MB = 1024L * 1024L
+        const val MAX_DISK_CACHE_BYTES = 128L * MB
     }
 }

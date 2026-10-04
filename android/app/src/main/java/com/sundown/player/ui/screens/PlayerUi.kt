@@ -4,8 +4,10 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,7 +24,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sundown.player.playback.PlaybackProgress
 import com.sundown.player.playback.PlayerSnapshot
+import kotlinx.coroutines.flow.StateFlow
 import com.sundown.player.ui.components.*
 import com.sundown.player.ui.icons.SIcon
 import com.sundown.player.ui.theme.*
@@ -65,13 +70,18 @@ fun TransportRow(
 @Composable
 fun Timeline(
     snapshot: PlayerSnapshot,
+    progress: StateFlow<PlaybackProgress>,
     modifier: Modifier = Modifier,
     onScrub: (Float) -> Unit,
 ) {
-    val duration = snapshot.durationMs
-    val fraction = if (duration > 0) snapshot.elapsedMs.toFloat() / duration else 0f
-    val elapsedLabel = formatDuration(snapshot.elapsedMs)
-    val remainingLabel = if (duration > 0) "-" + formatDuration(duration - snapshot.elapsedMs) else "-:--"
+    // Only this narrow subtree observes 250 ms position updates; the library,
+    // artwork and navigation shell remain skipped while a track advances.
+    val playhead by progress.collectAsStateWithLifecycle()
+    val duration = playhead.durationMs
+    val elapsed = playhead.elapsedMs
+    val fraction = if (duration > 0) elapsed.toFloat() / duration else 0f
+    val elapsedLabel = formatDuration(elapsed)
+    val remainingLabel = if (duration > 0) "-" + formatDuration(duration - elapsed) else "-:--"
     val style = TextStyle(
         color = Color(0xFFD3DBE1), fontSize = 11.5f.cssSp, fontFamily = SundownFontFamily,
         shadow = Shadow(Color(0xFF27323B), Offset(0f, -1f), 1f),
@@ -90,7 +100,7 @@ fun Timeline(
             softWrap = false,
             overflow = TextOverflow.Clip,
         )
-        ProgressSlider(fraction, Modifier.weight(1f), enabled = snapshot.hasSource, onScrub = onScrub)
+        ProgressSlider(fraction, Modifier.weight(1f), enabled = snapshot.hasSource && duration > 0L, onScrub = onScrub)
         Text(
             remainingLabel,
             Modifier.widthIn(min = if (remainingLabel.count { it == ':' } > 1) 54.dp else D.remainingWidth),
@@ -111,6 +121,7 @@ fun Timeline(
 @Composable
 fun MiniPlayer(
     snapshot: PlayerSnapshot,
+    progress: StateFlow<PlaybackProgress>,
     modifier: Modifier = Modifier,
     onOpenNowPlaying: () -> Unit,
     onPrevious: () -> Unit,
@@ -118,6 +129,7 @@ fun MiniPlayer(
     onNext: () -> Unit,
     onScrub: (Float) -> Unit,
     onVolume: (Float) -> Unit,
+    onVolumeCommit: () -> Unit = {},
     onMute: () -> Unit,
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
@@ -205,11 +217,11 @@ fun MiniPlayer(
             if (wide) {
                 VolumePill(
                     snapshot.volume, snapshot.muted, Modifier.width(200.dp),
-                    onLevel = onVolume, onToggleMute = onMute,
+                    onLevel = onVolume, onLevelCommit = onVolumeCommit, onToggleMute = onMute,
                 )
             }
         }
-        Timeline(snapshot, Modifier.fillMaxWidth(), onScrub = onScrub)
+        Timeline(snapshot, progress, Modifier.fillMaxWidth(), onScrub = onScrub)
     }
 }
 
@@ -234,6 +246,7 @@ private fun NowPlayingPulse(modifier: Modifier = Modifier) {
 @Composable
 fun NowPlayingContent(
     snapshot: PlayerSnapshot,
+    progress: StateFlow<PlaybackProgress>,
     modifier: Modifier = Modifier,
     onOpenAlbum: () -> Unit,
     onOpenQueue: () -> Unit,
@@ -242,6 +255,7 @@ fun NowPlayingContent(
     onNext: () -> Unit,
     onScrub: (Float) -> Unit,
     onVolume: (Float) -> Unit,
+    onVolumeCommit: () -> Unit = {},
     onMute: () -> Unit,
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
@@ -283,6 +297,7 @@ fun NowPlayingContent(
     Column(
         modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
             .padding(top = 6.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -340,7 +355,7 @@ fun NowPlayingContent(
             }
         }
 
-        Timeline(snapshot, Modifier.fillMaxWidth(), onScrub = onScrub)
+        Timeline(snapshot, progress, Modifier.fillMaxWidth(), onScrub = onScrub)
         TransportRow(snapshot, big = true, onPrevious = onPrevious, onToggle = onToggle, onNext = onNext)
 
         Row(
@@ -351,7 +366,7 @@ fun NowPlayingContent(
             ModePill(snapshot.repeat, snapshot.shuffle, onRepeat = onRepeat, onShuffle = onShuffle)
             VolumePill(
                 snapshot.volume, snapshot.muted, Modifier.weight(1f).widthIn(max = 240.dp),
-                onLevel = onVolume, onToggleMute = onMute,
+                onLevel = onVolume, onLevelCommit = onVolumeCommit, onToggleMute = onMute,
             )
         }
 

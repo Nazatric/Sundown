@@ -64,7 +64,9 @@ class MetadataExtractor(private val context: Context) {
                     ?: retriever.num(MediaMetadataRetriever.METADATA_KEY_DATE).takeIf { it in 1000..3000 } ?: 0,
                 durationSec = (retriever.numLong(MediaMetadataRetriever.METADATA_KEY_DURATION) / 1_000L)
                     .coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                picture = runCatching { retriever.embeddedPicture }.getOrNull(),
+                // embeddedPicture eagerly materializes the entire blob before a size check can run.
+                // Artwork is extracted by Rust from the bounded head/tail slices below instead.
+                picture = null,
             )
         } catch (_: Exception) {
             null
@@ -115,7 +117,7 @@ class MetadataExtractor(private val context: Context) {
     private fun empty(title: String) = Result(title, "", "", "", "", 0, 0, 0, 0, null)
 
     private fun MediaMetadataRetriever.str(key: Int): String = runCatching { extractMetadata(key).orEmpty().trim() }.getOrDefault("")
-    private fun MediaMetadataRetriever.num(key: Int): Int = extractMetadata(key)?.substringBefore('/').toIntOrNull() ?: 0
+    private fun MediaMetadataRetriever.num(key: Int): Int = extractMetadata(key)?.substringBefore('/')?.toIntOrNull() ?: 0
     private fun MediaMetadataRetriever.numLong(key: Int): Long = extractMetadata(key)?.toLongOrNull() ?: 0L
 
     private companion object {

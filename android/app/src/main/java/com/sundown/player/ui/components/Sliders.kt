@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.sundown.player.ui.theme.*
+import kotlinx.coroutines.delay
 
 /**
  * `.progress-range` — 8 dp inset track, concentric 19 dp thumb.
@@ -39,14 +40,47 @@ fun ProgressSlider(
 ) {
     var widthPx by remember { mutableIntStateOf(0) }
     var dragging by remember { mutableStateOf(false) }
+    var dragChanged by remember { mutableStateOf(false) }
+    var previewActive by remember { mutableStateOf(false) }
+    var previewRevision by remember { mutableIntStateOf(0) }
+    var previewProgress by remember { mutableFloatStateOf(fraction.coerceIn(0f, 1f)) }
     val density = LocalDensity.current
     val clamped = fraction.coerceIn(0f, 1f)
+    val latestClamped by rememberUpdatedState(clamped)
+    val latestOnScrub by rememberUpdatedState(onScrub)
+
+    fun previewTo(value: Float) {
+        previewProgress = value.coerceIn(0f, 1f)
+        previewActive = true
+        previewRevision += 1
+    }
+
+    fun commitTo(value: Float) {
+        previewTo(value)
+        latestOnScrub(previewProgress)
+    }
+
+    LaunchedEffect(previewRevision) {
+        if (previewActive) {
+            delay(700)
+            previewActive = false
+        }
+    }
+    LaunchedEffect(clamped) {
+        if (previewActive && kotlin.math.abs(clamped - previewProgress) <= 0.002f) {
+            previewActive = false
+        }
+    }
     val animatedProgress by animateFloatAsState(
         targetValue = clamped,
         animationSpec = tween(250, easing = LinearEasing),
         label = "progress",
     )
-    val displayedProgress = if (dragging) clamped else animatedProgress
+    val displayedProgress = when {
+        dragging -> previewProgress
+        previewActive -> previewProgress
+        else -> animatedProgress
+    }
 
     Box(
         modifier = modifier
@@ -54,16 +88,30 @@ fun ProgressSlider(
             .onSizeChanged { widthPx = it.width }
             .pointerInput(enabled, widthPx) {
                 if (!enabled || widthPx == 0) return@pointerInput
-                detectTapGestures { offset -> onScrub((offset.x / widthPx).coerceIn(0f, 1f)) }
+                detectTapGestures { offset -> commitTo(offset.x / widthPx) }
             }
             .pointerInput(enabled, widthPx) {
                 if (!enabled || widthPx == 0) return@pointerInput
                 detectHorizontalDragGestures(
-                    onDragStart = { dragging = true },
-                    onDragEnd = { dragging = false },
-                    onDragCancel = { dragging = false },
+                    onDragStart = {
+                        dragging = true
+                        dragChanged = false
+                        previewProgress = latestClamped
+                        previewActive = false
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        if (dragChanged) latestOnScrub(previewProgress)
+                        dragChanged = false
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragChanged = false
+                        previewActive = false
+                    },
                     onHorizontalDrag = { change, _ ->
-                        onScrub((change.position.x / widthPx).coerceIn(0f, 1f))
+                        dragChanged = true
+                        previewTo(change.position.x / widthPx)
                     },
                 )
             },
@@ -104,11 +152,14 @@ fun VolumePill(
     muted: Boolean,
     modifier: Modifier = Modifier,
     onLevel: (Float) -> Unit,
+    onLevelCommit: () -> Unit = {},
     onToggleMute: () -> Unit,
 ) {
     var widthPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
     val value = (if (muted) 0f else level).coerceIn(0f, 1f)
+    val latestOnLevel by rememberUpdatedState(onLevel)
+    val latestOnLevelCommit by rememberUpdatedState(onLevelCommit)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -127,13 +178,29 @@ fun VolumePill(
                 .onSizeChanged { widthPx = it.width }
                 .pointerInput(widthPx) {
                     if (widthPx == 0) return@pointerInput
-                    detectTapGestures { offset -> onLevel((offset.x / widthPx).coerceIn(0f, 1f)) }
+                    detectTapGestures { offset ->
+                        latestOnLevel((offset.x / widthPx).coerceIn(0f, 1f))
+                        latestOnLevelCommit()
+                    }
                 }
                 .pointerInput(widthPx) {
                     if (widthPx == 0) return@pointerInput
-                    detectHorizontalDragGestures { change, _ ->
-                        onLevel((change.position.x / widthPx).coerceIn(0f, 1f))
-                    }
+                    var dragChanged = false
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragChanged = false },
+                        onDragEnd = {
+                            if (dragChanged) latestOnLevelCommit()
+                            dragChanged = false
+                        },
+                        onDragCancel = {
+                            if (dragChanged) latestOnLevelCommit()
+                            dragChanged = false
+                        },
+                        onHorizontalDrag = { change, _ ->
+                            dragChanged = true
+                            latestOnLevel((change.position.x / widthPx).coerceIn(0f, 1f))
+                        },
+                    )
                 },
             contentAlignment = Alignment.CenterStart,
         ) {

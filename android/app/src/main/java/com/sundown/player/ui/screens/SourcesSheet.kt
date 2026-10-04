@@ -34,6 +34,7 @@ fun SourcesSheetContent(
     albumCount: Int,
     sessionCount: Int,
     hasAccess: Boolean,
+    checkingFolderAccess: Boolean = false,
     mediaStorePermission: Boolean,
     scanning: Boolean,
     onClose: () -> Unit,
@@ -80,7 +81,10 @@ fun SourcesSheetContent(
             label = if (prefs.treeUri != null) "Choose a Different Folder..." else "Choose Music Folder...",
             icon = SIcon.Folder, enabled = !scanning, onClick = onPickFolder,
         )
-        if (prefs.treeUri != null && !hasAccess) {
+        if (prefs.treeUri != null && checkingFolderAccess) {
+            SheetAction("Checking Folder Access...", SIcon.Folder, enabled = false, onClick = {})
+        }
+        if (prefs.treeUri != null && !hasAccess && !checkingFolderAccess) {
             SheetAction("Restore Folder Access", SIcon.Check, enabled = !scanning, highlight = true, onClick = onRestoreAccess)
         }
         if (prefs.treeUri != null && hasAccess) {

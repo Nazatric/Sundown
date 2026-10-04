@@ -1,10 +1,15 @@
 package com.sundown.player.data.db
 
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
-/** Mirrors the web `TrackRec` field-for-field so the port stays comparable. */
-@Entity(tableName = "tracks", indices = [Index("albumKey"), Index("artistKey"), Index("genre")])
+/** Persisted metadata and source fingerprints for one locally indexed audio track. */
+@Entity(
+    tableName = "tracks",
+    indices = [Index("albumKey"), Index("artistKey"), Index("genre"), Index("source"), Index("artId")],
+)
 data class TrackEntity(
     @PrimaryKey val id: String,
     val docUri: String,
@@ -12,6 +17,8 @@ data class TrackEntity(
     val name: String,
     val size: Long,
     val mtime: Long,
+    /** Opaque MediaStore version for this row; null for SAF and one-off files. */
+    val sourceVersion: String?,
     val title: String,
     val artist: String,
     val album: String,
@@ -43,11 +50,17 @@ interface LibraryDao {
     @Query("SELECT * FROM tracks")
     fun observeTracks(): Flow<List<TrackEntity>>
 
-    @Query("SELECT * FROM tracks")
-    suspend fun allTracks(): List<TrackEntity>
+    @Query("SELECT * FROM tracks WHERE id IN (:ids)")
+    suspend fun tracksByIds(ids: List<String>): List<TrackEntity>
 
-    @Query("SELECT id, path, size, mtime, artId FROM tracks WHERE source = :source")
+    @Query("SELECT id, docUri, path, size, mtime, sourceVersion, artId FROM tracks WHERE source = :source")
     suspend fun fingerprints(source: String): List<FingerprintRow>
+
+    @Query("SELECT DISTINCT artId FROM tracks WHERE artId IS NOT NULL")
+    suspend fun referencedArtworkIds(): List<String>
+
+    @Query("SELECT * FROM tracks WHERE artId = :artId LIMIT 1")
+    suspend fun trackForArtwork(artId: String): TrackEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(tracks: List<TrackEntity>)
@@ -80,14 +93,35 @@ interface LibraryDao {
     suspend fun clearPlaylists()
 }
 
-data class FingerprintRow(val id: String, val path: String, val size: Long, val mtime: Long, val artId: String?)
+data class FingerprintRow(
+    val id: String,
+    val docUri: String,
+    val path: String,
+    val size: Long,
+    val mtime: Long,
+    val sourceVersion: String?,
+    val artId: String?,
+)
 
-@Database(entities = [TrackEntity::class, PlaylistEntity::class], version = 1, exportSchema = false)
+@Database(entities = [TrackEntity::class, PlaylistEntity::class], version = 3, exportSchema = false)
 abstract class SundownDatabase : RoomDatabase() {
     abstract fun libraryDao(): LibraryDao
 
     companion object {
         @Volatile private var instance: SundownDatabase? = null
+
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_source` ON `tracks` (`source`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_artId` ON `tracks` (`artId`)")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `tracks` ADD COLUMN `sourceVersion` TEXT")
+            }
+        }
 
         fun get(context: android.content.Context): SundownDatabase =
             instance ?: synchronized(this) {
@@ -95,7 +129,10 @@ abstract class SundownDatabase : RoomDatabase() {
                     context.applicationContext,
                     SundownDatabase::class.java,
                     "sundown-music.db",
-                ).build().also { instance = it }
+                )
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .build()
+                    .also { instance = it }
             }
     }
 }

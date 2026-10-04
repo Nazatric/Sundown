@@ -20,10 +20,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.sundown.player.data.db.TrackEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.sundown.player.ui.components.*
 import com.sundown.player.ui.icons.SIcon
 import com.sundown.player.ui.icons.SundownIcon
 import com.sundown.player.ui.theme.*
+
+private data class PlaylistSortableTrack(
+    val track: TrackEntity,
+    val artist: String,
+    val title: String,
+)
 
 /**
  * `.new-playlist-sheet` — name field, song filter, and a checklist.
@@ -40,11 +48,23 @@ fun NewPlaylistContent(
     var filter by remember { mutableStateOf("") }
     val selection = remember { mutableStateListOf<String>().apply { addAll(seedIds) } }
 
-    val visible = remember(tracks, filter) {
-        val needle = filter.trim()
-        val sorted = tracks.sortedWith(compareBy({ it.artist.lowercase() }, { it.title.lowercase() }))
-        if (needle.isBlank()) sorted
-        else sorted.filter { "${it.title} ${it.artist} ${it.album}".contains(needle, true) }
+    var sortedTracks by remember(tracks) { mutableStateOf(emptyList<TrackEntity>()) }
+    LaunchedEffect(tracks) {
+        sortedTracks = withContext(Dispatchers.Default) {
+            tracks.map { track ->
+                PlaylistSortableTrack(track, track.artist.lowercase(), track.title.lowercase())
+            }.sortedWith(compareBy<PlaylistSortableTrack>({ it.artist }, { it.title }))
+                .map(PlaylistSortableTrack::track)
+        }
+    }
+
+    var visible by remember { mutableStateOf(emptyList<TrackEntity>()) }
+    LaunchedEffect(sortedTracks, filter) {
+        visible = withContext(Dispatchers.Default) {
+            val needle = filter.trim()
+            if (needle.isBlank()) sortedTracks
+            else sortedTracks.filter { "${it.title} ${it.artist} ${it.album}".contains(needle, true) }
+        }
     }
 
     SheetToolbar(
