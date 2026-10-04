@@ -145,6 +145,32 @@ private fun Sleeve(
  *   right  +3.0deg  ( 3, 3)  brightness .90  saturate .75
  *   front   0       ( 0, 0)  full art + hairline inner highlight
  */
+/**
+ * convincing skeuomorphic gloss: a subtle white-to-transparent radial gradient
+ * that simulates a light source from the top-left hitting a curved surface.
+ */
+@Composable
+private fun BoxScope.GlossOverlay() {
+    Canvas(Modifier.matchParentSize()) {
+        val glossGradient = Brush.verticalGradient(
+            0.0f to Color.White.copy(alpha = 0.15f),
+            0.45f to Color.White.copy(alpha = 0.05f),
+            0.50f to Color.Transparent,
+            startY = 0f,
+            endY = size.height
+        )
+        drawRect(glossGradient)
+        
+        // top edge specular highlight
+        drawLine(
+            color = Color.White.copy(alpha = 0.35f),
+            start = Offset(0f, 0f),
+            end = Offset(size.width, 0f),
+            strokeWidth = 1.2.dp.toPx()
+        )
+    }
+}
+
 @Composable
 fun AlbumStack(
     artId: String?,
@@ -163,32 +189,37 @@ fun AlbumStack(
                 color = Color(0x6E0C151D),
             )
         }
-        Sleeve(4f, 1.dp, (-3).dp, borderColor = P.PaperEdge) {
+        // Stacked layers with precise transforms
+        Sleeve(4f, 1.dp, (-3.5).dp, borderColor = P.PaperEdge) {
             Box(Modifier.fillMaxSize().background(G.paper))
         }
-        Sleeve(-4f, (-1).dp, (-2).dp) {
-            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(1.2f, 0.45f), alpha = 0.65f)
+        Sleeve(-4.2f, (-1.2).dp, (-2.5).dp) {
+            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(1.15f, 0.45f), alpha = 0.68f)
         }
-        Sleeve(-3.7f, (-3).dp, 3.dp) {
-            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(0.79f, 0.6f))
+        Sleeve(-3.8f, (-3.5).dp, 3.5.dp) {
+            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(0.82f, 0.62f))
         }
-        Sleeve(3f, 3.dp, 3.dp) {
-            ArtworkImage(artId, small, Modifier.fillMaxSize(), toneFilter(0.9f, 0.75f))
+        Sleeve(3.2f, 3.5.dp, 3.5.dp) {
+            ArtworkImage(artId, small, Modifier.fillMaxSize(), toneFilter(0.92f, 0.78f))
         }
+        
+        // Front cover with glossy finish
         Box(
             Modifier
                 .fillMaxSize()
-                .cssShadow(Color(0xB80A1219), blur = 4.dp, offsetY = 2.dp, cornerRadius = D.sleeveRadius)
+                .cssShadow(Color(0xB80A1219), blur = 5.dp, offsetY = 2.5.dp, cornerRadius = D.sleeveRadius)
                 .clip(RoundedCornerShape(D.sleeveRadius))
                 .background(P.SleeveFill)
                 .border(1.dp, P.SleeveEdge, RoundedCornerShape(D.sleeveRadius)),
         ) {
             ArtworkImage(artId, small, Modifier.fillMaxSize())
-            // .sleeve--front::after — 1px warm hairline inside the edge.
+            GlossOverlay()
+            
+            // 1px warm hairline inside the edge for depth
             Box(
                 Modifier
                     .matchParentSize()
-                    .border(1.dp, Color(0x6BF8F8F3), RoundedCornerShape(1.dp)),
+                    .border(1.dp, Color(0x4DF8F8F3), RoundedCornerShape(D.sleeveRadius)),
             )
         }
     }

@@ -91,13 +91,14 @@ private fun TileFrame(
         if (!revealedItems.add(revealKey) || !ValueAnimator.areAnimatorsEnabled()) {
             progress.snapTo(1f)
         } else {
-            val staggerMs = (index % 4) * 55L
+            // Match the 2-column layout for mobile stagger
+            val staggerMs = (index % 2) * 65L
             if (staggerMs > 0L) delay(staggerMs)
             progress.animateTo(
                 targetValue = 1f,
                 animationSpec = tween(
-                    durationMillis = 460,
-                    easing = CubicBezierEasing(0.2f, 0.65f, 0.3f, 1f),
+                    durationMillis = 520, // Slightly longer for smoother "iPad" feel
+                    easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1.0f), // Quartic-out style
                 ),
             )
         }

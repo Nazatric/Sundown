@@ -112,15 +112,17 @@ fun LibraryScreen(
         val loader = artworkLoader ?: return@LaunchedEffect
         if (state.tab == LibraryTab.Songs) return@LaunchedEffect
         snapshotFlow {
-            val visible = gridState.layoutInfo.visibleItemsInfo
+            val layoutInfo = gridState.layoutInfo
+            val visible = layoutInfo.visibleItemsInfo
             if (visible.isEmpty() || galleryArtwork.isEmpty()) emptyList()
             else {
-                val first = visible.minOf { it.index }.coerceAtLeast(0)
-                val last = (visible.maxOf { it.index } + columns * 2).coerceAtMost(galleryArtwork.lastIndex)
-                if (first > last) emptyList()
-                else (first..last).flatMap { galleryArtwork.getOrNull(it)?.artIds.orEmpty() }.distinct()
+                val first = visible.first().index
+                val last = (visible.last().index + columns * 2).coerceAtMost(galleryArtwork.lastIndex)
+                (first..last).flatMap { galleryArtwork.getOrNull(it)?.artIds.orEmpty() }.distinct()
             }
         }.distinctUntilChanged().collectLatest { artIds ->
+            // Use a slight delay before preloading during fast flings to avoid churn
+            delay(32) 
             preloadArtwork(loader, artIds, small = !state.prefs.highArt)
         }
     }
@@ -148,7 +150,8 @@ fun LibraryScreen(
     }
 
     Column(modifier.fillMaxSize()) {
-        StatusStrip()
+        // Removed StatusStrip() to achieve true edge-to-edge fullscreen as requested.
+        // The native status bar is already hidden in MainActivity.
         LibraryToolbar(
             query = state.query,
             selectedTab = TABS.indexOf(state.tab.name).coerceAtLeast(0),

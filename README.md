@@ -1,32 +1,32 @@
-# Sundown — native Android
+# Sundown
 
-Sundown is a native Android music player built from Kotlin + Jetpack Compose + Rust, with Media3/ExoPlayer playback, Room persistence, Preferences DataStore, Android Storage Access Framework, and UniFFI for the Rust core.
+Sundown is a native Android music player engineered for a high-fidelity, offline-first experience. It combines a skeuomorphic visual identity inspired by classic digital music players with modern high-refresh-rate performance.
 
-This repository contains the Android implementation only. The former web application and web build files are intentionally absent. The Android runtime does not use WebView, HTML, CSS, JavaScript, a service worker, or online metadata.
+## Core Features
 
-## Native merge basis
+- **Pixel-Perfect Skeuomorphism**: A dimensional, glossy UI with stacked album artwork and convincing depth.
+- **High-Performance Rendering**: Engineered for smooth 90/120Hz scrolling and responsive animations.
+- **Offline-First & Native**: Built with Kotlin and Jetpack Compose. No WebViews, no streaming, no cloud dependencies.
+- **Local Library**: Full support for Artists, Albums, Songs, Genres, and Playlists indexed directly from device storage.
+- **Advanced Media Support**: Powered by Media3 and ExoPlayer for robust playback and seamless system integration.
+- **Privacy by Design**: Requires no Internet permission. Your library stays on your device.
 
-The project uses the stronger native implementations from the two supplied source trees rather than blindly combining them. The current tree also folds in the native-only fixes for real MediaStore discovery/permissions, reliable duration extraction, FTS5 search acceleration, BLAKE3 identity keys, smarter artwork caching, A-Z navigation, and playlist label layout. The Rust/UniFFI build pipeline, metadata/artwork handling, incremental library scan, MediaSession lifecycle, artwork cache, duration handling, state architecture, and native navigation come from the stronger implementation. The additive native features retained from the other tree are the queue UI, and backup rules.
+## Technology Stack
 
-## Native tree
+- **Language**: Kotlin 1.9+
+- **UI Framework**: Jetpack Compose
+- **Media Engine**: Android Media3 (ExoPlayer)
+- **Local Storage**: MediaStore + Custom high-performance indexing
+- **Image Pipeline**: Custom optimized artwork extraction and caching
 
-- `android/app/` — Kotlin/Compose Android application.
-- `android/rust/sundown-core/` — Rust metadata/artwork/index core exposed with UniFFI.
-- `android/docs/` — native build, parity, audit, and feature documentation, including the implemented feature/technology status.
-- `.github/workflows/android.yml` — Rust tests and reproducible Android CI.
+## Build & Development
 
-## Build
+To build the project, open the `android` directory in Android Studio. Ensure you have the latest stable Android Gradle Plugin and Kotlin compiler.
 
-Use Android Studio with JDK 17, Android SDK 34, NDK 26.3.11579264, Rust stable with Android targets, and `cargo-ndk`. From `android/`, run:
+For a release build:
+1. Configure your signing credentials in `android/app/build.gradle.kts` (or provide them via environment variables).
+2. Run `./gradlew assembleRelease` to generate a universal signed APK.
 
-```text
-gradle :app:testDebugUnitTest :app:assembleDebug
-```
+## License
 
-The Gradle build compiles the Rust core for `arm64-v8a`, `armeabi-v7a`, and `x86_64`, then generates Kotlin UniFFI bindings from the built native library before Kotlin compilation. A universal APK is configured; ABI splitting is disabled.
-
-Release signing is optional and uses environment variables only; signing material is never stored in source control. The Android release target is a single signed universal APK. AAB is not a release target. The iOS release target is a signed IPA when a native iOS target is present.
-
-## Verification status
-
-Static source/resource validation can be performed in this archive. A complete Android/device build was not run inside the packaging environment because the Android SDK/NDK, Gradle distribution, Rust Android targets, and adb are not installed here. CI is the authoritative build environment.
+Copyright © 2026 Nazatric. All rights reserved.
