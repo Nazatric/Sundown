@@ -90,7 +90,9 @@ fun ArtworkImage(
     }
     LaunchedEffect(bitmap, initialBitmap) {
         if (bitmap != null && initialBitmap == null) {
-            imageAlpha.animateTo(1f, tween(durationMillis = 140))
+            // Short fade-in keeps artwork feeling immediate while avoiding a
+            // harsh pop. 80ms is fast enough to feel stable during scrolling.
+            imageAlpha.animateTo(1f, tween(durationMillis = 80))
         }
     }
 
@@ -209,17 +211,36 @@ fun AlbumStack(
                 .border(1.dp, P.SleeveEdge, RoundedCornerShape(D.sleeveRadius)),
         ) {
             ArtworkImage(artId, small, Modifier.fillMaxSize())
-            // A restrained, diagonal specular sheen restores the glossy front-sleeve finish
-            // without obscuring the cover artwork or rasterizing a functional layer.
+            // Glossy front-sleeve finish: a curved specular highlight concentrated
+            // at the top of the card, simulating overhead light hitting a glossy
+            // surface. Matches the reference's "glass over artwork" appearance.
             Canvas(Modifier.matchParentSize()) {
+                // Primary top-concentrated gloss: vertical gradient fading out
+                // at ~45% height, stronger than the original diagonal approach.
                 drawRect(
-                    brush = Brush.linearGradient(
-                        0.00f to Color.White.copy(alpha = 0.10f),
-                        0.18f to Color.White.copy(alpha = 0.05f),
-                        0.42f to Color.Transparent,
+                    brush = Brush.verticalGradient(
+                        0.00f to Color.White.copy(alpha = 0.22f),
+                        0.08f to Color.White.copy(alpha = 0.18f),
+                        0.22f to Color.White.copy(alpha = 0.08f),
+                        0.38f to Color.White.copy(alpha = 0.02f),
+                        0.50f to Color.Transparent,
                         1.00f to Color.Transparent,
-                        start = Offset.Zero,
-                        end = Offset(this.size.width, this.size.height),
+                    ),
+                )
+                // Specular top-edge highlight: a 1.5px bright line at the very
+                // top simulating the edge catching direct light.
+                drawLine(
+                    color = Color.White.copy(alpha = 0.30f),
+                    start = Offset(0f, 0.5f),
+                    end = Offset(this.size.width, 0.5f),
+                    strokeWidth = 1.5f,
+                )
+                // Subtle bottom darkening for depth/curvature illusion.
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        0.00f to Color.Transparent,
+                        0.85f to Color.Transparent,
+                        1.00f to Color.Black.copy(alpha = 0.06f),
                     ),
                 )
             }
@@ -227,7 +248,7 @@ fun AlbumStack(
             Box(
                 Modifier
                     .matchParentSize()
-                    .border(1.dp, Color(0x6BF8F8F3), RoundedCornerShape(1.dp)),
+                    .border(1.dp, Color(0x5CF8F8F3), RoundedCornerShape(D.sleeveRadius)),
             )
         }
     }

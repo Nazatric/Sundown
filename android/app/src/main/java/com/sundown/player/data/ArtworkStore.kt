@@ -29,8 +29,9 @@ class ArtworkStore(context: Context) : ArtworkLoader {
     private val dir = File(context.filesDir, "art")
     private val generation = AtomicLong(0L)
     @Volatile private var missingArtworkProvider: (suspend (String, Boolean) -> ByteArray?)? = null
-    // Bound concurrent bitmap decoding across visible and prefetched artwork.
-    private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(2))
+    // Allow up to 4 concurrent bitmap decodes to reduce artwork pop-in during
+    // fast scrolling on high-refresh-rate displays.
+    private val loadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4))
 
     private class ArtworkFlight(val task: Deferred<ImageBitmap?>) {
         private var waiters = 0

@@ -1,18 +1,19 @@
 # Sundown
 
-A native, offline Android music player built with Kotlin, Jetpack Compose, Rust/UniFFI, Media3/ExoPlayer, Room, and Android's Storage Access Framework.
+A native, offline Android music player with a pixel-perfect skeuomorphic UI.
 
 ## Features
 
-- **Pixel-perfect skeuomorphic UI** — glossy layered album artwork stacks, dimensional shadows, polished metal controls
-- **Offline-first** — no Internet permission, no cloud, no streaming, no telemetry
-- **High-refresh-rate performance** — engineered for smooth 90/120 Hz scrolling and animations
-- **Full local library** — Artists, Albums, Songs, Genres, Playlists with A–Z index navigation
-- **Fast search** — SQLite FTS5 indexed search across title, artist, album, genre
-- **Robust playback** — Media3/ExoPlayer with MediaSession, system notification, background playback
-- **Incremental indexing** — MediaStore generation tracking, SAF folder scanning, handles adds/deletes/changes efficiently
-- **Multi-level artwork caching** — memory cache, disk cache, background decoding, near-visible prefetching
+- **Glossy layered album artwork** — five-layer card stacks with specular highlights, dimensional shadows, and curved gloss
+- **Smooth 90/120 Hz rendering** — stable Compose keys, remembered allocations, 4-thread parallel artwork decode, controlled recomposition
+- **Multi-level artwork caching** — LRU memory cache, persistent disk cache (WebP), near-visible prefetching, 80ms fade-in for cache misses
+- **Fast FTS5 search** — SQLite full-text indexed across title, artist, album, genre
+- **Incremental MediaStore indexing** — generation-based change tracking without full rescans
+- **Robust playback** — Media3/ExoPlayer, MediaSession, system notification, background playback
+- **Modern navigation** — PredictiveBackHandler, gesture-back, reliable sheet transitions
+- **Edge-to-edge fullscreen** — status bar hidden, proper inset handling
 - **Rust-powered core** — BLAKE3 hashing, metadata parsing, artwork processing via UniFFI
+- **Completely offline** — no Internet permission, no cloud, no streaming, no telemetry
 
 ## Architecture
 
@@ -26,33 +27,24 @@ A native, offline Android music player built with Kotlin, Jetpack Compose, Rust/
 
 ## Source Layout
 
-- `android/app/` — Kotlin/Compose UI, local library, playback service, Android integration
-- `android/rust/sundown-core/` — metadata parsing, artwork processing, indexing, BLAKE3 hashing
-- `android/docs/` — build notes, source audit, feature coverage, validation
-- `.github/workflows/android.yml` — CI: Rust tests, Android tests, debug + release APK builds
+```
+android/app/       Kotlin/Compose UI, library, playback, Android integration
+android/rust/      sundown-core: metadata, artwork, indexing, BLAKE3
+android/docs/      Build notes, audit, feature coverage
+.github/workflows/ CI: Rust tests, Android tests, debug + release APK
+```
 
 ## Build
 
-Requirements: JDK 17, Android SDK 34, NDK 26.3.11579264, Rust stable with Android targets, `cargo-ndk`.
+Requirements: JDK 17, Android SDK 34, NDK 26.3, Rust stable with Android targets, `cargo-ndk`.
 
 ```bash
 cd android
-gradle :app:testDebugUnitTest :app:assembleDebug
+gradle :app:assembleDebug        # debug APK
+gradle :app:assembleRelease      # release APK (requires signing config)
 ```
 
-The Gradle build compiles the Rust core for `arm64-v8a`, `armeabi-v7a`, and `x86_64`, generates UniFFI Kotlin bindings, then builds the universal APK (ABI splitting disabled).
-
-### Release Build
-
-Release signing uses environment variables: `SUNDOWN_STORE_FILE`, `SUNDOWN_STORE_PASSWORD`, `SUNDOWN_KEY_ALIAS`, `SUNDOWN_KEY_PASSWORD`. CI uses equivalent GitHub secrets (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`).
-
-```bash
-SUNDOWN_STORE_FILE=release.keystore \
-SUNDOWN_STORE_PASSWORD=... \
-SUNDOWN_KEY_ALIAS=... \
-SUNDOWN_KEY_PASSWORD=... \
-gradle :app:assembleRelease
-```
+Release signing uses environment variables: `SUNDOWN_STORE_FILE`, `SUNDOWN_STORE_PASSWORD`, `SUNDOWN_KEY_ALIAS`, `SUNDOWN_KEY_PASSWORD`. CI uses equivalent GitHub secrets.
 
 ## Release
 
