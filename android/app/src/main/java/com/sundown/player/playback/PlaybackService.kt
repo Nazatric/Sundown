@@ -46,7 +46,6 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
-        player.skipSilenceEnabled = false
         player.addListener(object : Player.Listener {
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (player.mediaItemCount > 0) hasObservedQueue = true
