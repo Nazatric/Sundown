@@ -519,6 +519,7 @@ fun TrackEntity.toRowModel() = SongRowModel(
 )
 
 /** Branded strip only; the native status bar is hidden rather than faked. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun StatusStrip() {
     Box(

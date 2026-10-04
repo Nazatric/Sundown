@@ -168,7 +168,7 @@ class ArtworkStore(context: Context) : ArtworkLoader {
         val cacheGeneration = generation.get()
         val flightKey = "$cacheGeneration:$cacheKey"
         var created = false
-        val flight = inFlight.compute(flightKey) { _, existing ->
+        val flight = requireNotNull(inFlight.compute(flightKey) { _, existing ->
             if (existing != null && existing.acquire()) {
                 existing
             } else {
@@ -180,7 +180,7 @@ class ArtworkStore(context: Context) : ArtworkLoader {
                 }
                 ArtworkFlight(task).also { check(it.acquire()) }
             }
-        }
+        }) { "Artwork load flight was not created." }
         if (created) {
             flight.task.invokeOnCompletion { inFlight.remove(flightKey, flight) }
             flight.task.start()
