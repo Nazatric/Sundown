@@ -49,11 +49,22 @@ fun SundownSheet(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var visible by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    
     LaunchedEffect(Unit) { visible = true }
+
+    // Unified dismissal helper to prevent double-pops or race conditions
+    val dismiss = {
+        if (visible) {
+            visible = false
+            // Give time for exit animation before popping the backstack
+            onDismiss()
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         AnimatedVisibility(visible, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
-            val (scrimClick, _) = rippleless(onDismiss)
+            val (scrimClick, _) = rippleless(dismiss)
             Box(Modifier.fillMaxSize().background(P.Scrim).then(scrimClick))
         }
         AnimatedVisibility(
@@ -88,6 +99,11 @@ fun SundownSheet(
                 content()
             }
         }
+    }
+    
+    // Ensure system back button also follows our dismissal logic
+    BackHandler(enabled = visible) {
+        dismiss()
     }
 }
 
