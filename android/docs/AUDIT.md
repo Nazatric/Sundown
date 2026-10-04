@@ -2,7 +2,7 @@
 
 This document is a reference inventory of the existing screens and behaviors. The original web design is not shipped in this native-only repository, and this inventory is not a certification of visual parity.
 
-The latest successful CI run before the current working-tree diff is run [37156093336](https://github.com/Nazatric/Sundown/actions/runs/37156093336) at PR head `b47a81c424e1c00e71225bb6aa925dad0bc93f93`. It passed Rust/Android unit tests, debug and unsigned release-variant assembly, and ABI verification; the current diff still needs its own CI run. No device or screenshot validation has been performed, so this inventory remains a source mapping rather than a parity certification. See `PARITY.md` and the root `NATIVE_VERIFICATION.md` for current status.
+The latest successful source CI run is [37181294576](https://github.com/Nazatric/Sundown/actions/runs/37181294576) on code commit `0898a24a1eda31350bd0603f1ece6dd06649bcb7`. It passed Rust/Android unit tests, debug and unsigned release-variant assembly, and ABI verification; the follow-up report edits do not change application sources. No device or screenshot validation has been performed, so this inventory remains a source mapping rather than a parity certification. See `PARITY.md` and the root `NATIVE_VERIFICATION.md` for current status.
 
 ## 1. Screens / destinations
 
