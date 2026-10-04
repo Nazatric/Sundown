@@ -23,8 +23,8 @@ import com.sundown.player.ui.theme.*
 /**
  * `.segmented-control` — the five library tabs.
  *
- * Each segment is `flex: 1 1 0` with `min-width: 0`. On compact phones only the
- * segment's inner padding is reduced, preserving the toolbar and type size.
+ * Segments share available width by weight. A caller may give longer labels a
+ * modestly larger share; type size and the surrounding toolbar stay unchanged.
  */
 @Composable
 fun SegmentedControl(
@@ -33,6 +33,7 @@ fun SegmentedControl(
     modifier: Modifier = Modifier,
     fontSize: Float = 13f,
     horizontalPadding: Dp = D.segmentPadH,
+    weights: List<Float>? = null,
     onSelect: (Int) -> Unit,
 ) {
     Row(
@@ -47,7 +48,7 @@ fun SegmentedControl(
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .weight(1f)
+                    .weight(weights?.getOrNull(index)?.coerceAtLeast(0.01f) ?: 1f)
                     .fillMaxHeight()
                     .background(if (selected) G.tabSelected else G.tabIdle)
                     .then(clickModifier)

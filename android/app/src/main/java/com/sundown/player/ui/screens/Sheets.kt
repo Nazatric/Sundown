@@ -75,7 +75,11 @@ fun SundownSheet(
                     .border(
                         1.dp, P.SheetBorder,
                         RoundedCornerShape(topStart = D.sheetRadius, topEnd = D.sheetRadius),
-                    ),
+                    )
+                    // Keep sheet content clear of gesture navigation and the keyboard
+                    // while the panel surface remains edge-to-edge.
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .imePadding(),
             ) {
                 Box(
                     Modifier
@@ -432,6 +436,7 @@ fun PlaylistSheetContent(
 fun ChooserSheetContent(
     track: TrackEntity,
     playlists: List<PlaylistEntity>,
+    playlistTrackIdSets: Map<String, Set<String>>,
     onClose: () -> Unit,
     onChoose: (PlaylistEntity) -> Unit,
     onCreateNew: () -> Unit,
@@ -453,7 +458,7 @@ fun ChooserSheetContent(
             )
         }
         playlists.forEach { playlist ->
-            val ids = playlist.trackIds.split('\n').filter { it.isNotBlank() }
+            val ids = playlistTrackIdSets[playlist.id].orEmpty()
             val included = track.id in ids
             val (clickModifier, _) = rippleless({ onChoose(playlist) }, enabled = !included)
             Row(

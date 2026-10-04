@@ -11,7 +11,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -28,6 +30,7 @@ class MainActivity : ComponentActivity() {
     private var onTreePicked: ((Uri) -> Unit)? = null
     private var onFilesPicked: ((List<Uri>, Boolean) -> Unit)? = null
     private var libraryViewModel: LibraryViewModel? = null
+    private var keepScreenOnRequested = false
 
     private val pickTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let { onTreePicked?.invoke(it) }
@@ -59,8 +62,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         window.attributes = window.attributes.apply {
             // No app-level 60 Hz preference: let Android use each device's native refresh rate.
             preferredRefreshRate = 0f
@@ -85,10 +88,9 @@ class MainActivity : ComponentActivity() {
             // Match the source setting: keep the display awake only while audio
             // is actually playing, and always release the flag on pause.
             val keepAwake = state.prefs.keepAwake && playback.playing
-            if (keepAwake) {
-                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            } else {
-                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            SideEffect {
+                keepScreenOnRequested = keepAwake
+                applyKeepScreenOn()
             }
 
             CompositionLocalProvider(LocalArtworkLoader provides vm.artwork) {
@@ -145,9 +147,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        applyKeepScreenOn()
         // Always query PackageManager again after returning from a permission
         // dialog or Settings; the DataStore flag is only a prompt guard.
         if (permissionResult == null) libraryViewModel?.refreshMediaStorePermission()
+    }
+
+    override fun onPause() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        super.onPause()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -155,6 +163,15 @@ class MainActivity : ComponentActivity() {
         if (hasFocus) {
             hideSystemStatusBar()
             if (permissionResult == null) libraryViewModel?.refreshMediaStorePermission()
+        }
+    }
+
+    private fun applyKeepScreenOn() {
+        val shouldKeepOn = keepScreenOnRequested && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        if (shouldKeepOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 

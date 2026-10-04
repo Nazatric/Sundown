@@ -26,6 +26,9 @@ import com.sundown.player.ui.theme.groundShadow
 
 /** Supplies decoded high-resolution grid and compact row previews from the Rust core. */
 interface ArtworkLoader {
+    /** Non-blocking memory-cache lookup so prefetched covers can render on the first frame. */
+    fun cached(artId: String, small: Boolean): ImageBitmap? = null
+
     suspend fun load(artId: String, small: Boolean): ImageBitmap?
 }
 
@@ -72,10 +75,16 @@ fun ArtworkImage(
     alpha: Float = 1f,
 ) {
     val loader = LocalArtworkLoader.current
-    var bitmap by remember(artId, small, loader) { mutableStateOf<ImageBitmap?>(null) }
+    var bitmap by remember(artId, small, loader) {
+        mutableStateOf(artId?.let { loader?.cached(it, small) })
+    }
 
     LaunchedEffect(artId, small, loader) {
-        bitmap = if (artId != null && loader != null) loader.load(artId, small) else null
+        bitmap = if (artId != null && loader != null) {
+            loader.cached(artId, small) ?: loader.load(artId, small)
+        } else {
+            null
+        }
     }
 
     val image = bitmap
@@ -163,27 +172,30 @@ fun AlbumStack(
     modifier: Modifier = Modifier,
     small: Boolean = false,
 ) {
+    val rearTone = remember { toneFilter(1.2f, 0.45f) }
+    val leftTone = remember { toneFilter(0.79f, 0.6f) }
+    val rightTone = remember { toneFilter(0.9f, 0.75f) }
     Box(modifier.size(size)) {
-        Canvas(Modifier.matchParentSize()) {
-            groundShadow(
-                insetLeft = D.groundShadowInsetL.toPx(),
-                insetRight = D.groundShadowInsetR.toPx(),
-                top = this.size.height - D.groundShadowBottom.toPx(),
-                height = D.groundShadowHeight.toPx(),
+        Spacer(
+            Modifier.matchParentSize().groundShadow(
+                insetLeft = D.groundShadowInsetL,
+                insetRight = D.groundShadowInsetR,
+                bottom = D.groundShadowBottom,
+                height = D.groundShadowHeight,
                 color = Color(0x6E0C151D),
-            )
-        }
+            ),
+        )
         Sleeve(4f, 1.dp, (-3).dp, borderColor = P.PaperEdge) {
             Box(Modifier.fillMaxSize().background(G.paper))
         }
         Sleeve(-4f, (-1).dp, (-2).dp) {
-            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(1.2f, 0.45f), alpha = 0.65f)
+            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), rearTone, alpha = 0.65f)
         }
         Sleeve(-3.7f, (-3).dp, 3.dp) {
-            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), toneFilter(0.79f, 0.6f))
+            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), leftTone)
         }
         Sleeve(3f, 3.dp, 3.dp) {
-            ArtworkImage(artId, small, Modifier.fillMaxSize(), toneFilter(0.9f, 0.75f))
+            ArtworkImage(artId, small, Modifier.fillMaxSize(), rightTone)
         }
         Box(
             Modifier

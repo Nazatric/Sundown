@@ -3,7 +3,11 @@ package com.sundown.player.data.prefs
 import android.content.Context
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import com.sundown.player.data.media.MediaStoreCheckpoint
+import com.sundown.player.data.media.decodeMediaStoreCheckpoints
+import com.sundown.player.data.media.encodeMediaStoreCheckpoints
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore("sundown-prefs")
@@ -47,6 +51,10 @@ class SundownPrefs(private val context: Context) {
         val treeUri = stringPreferencesKey("treeUri")
         val treeName = stringPreferencesKey("treeName")
         val audioPermissionPrompted = booleanPreferencesKey("audioPermissionPrompted")
+        val mediaStoreCheckpoints = stringPreferencesKey("mediaStoreCheckpoints")
+        // Retained only so old checkpoints can be cleared after the next successful scan.
+        val mediaStoreGenerations = stringPreferencesKey("mediaStoreGenerations")
+        val mediaStoreGeneration = longPreferencesKey("mediaStoreGeneration")
     }
 
     val flow: Flow<Prefs> = context.dataStore.data.map { p ->
@@ -68,6 +76,26 @@ class SundownPrefs(private val context: Context) {
             treeName = p[K.treeName],
             audioPermissionPrompted = p[K.audioPermissionPrompted] ?: false,
         )
+    }
+
+    suspend fun mediaStoreCheckpoints(): Map<String, MediaStoreCheckpoint> {
+        val store = context.dataStore.data.first()
+        return decodeMediaStoreCheckpoints(store[K.mediaStoreCheckpoints].orEmpty())
+    }
+
+    suspend fun setMediaStoreCheckpoints(checkpoints: Map<String, MediaStoreCheckpoint>?) {
+        context.dataStore.edit { store ->
+            val values = checkpoints.orEmpty()
+            if (values.isEmpty()) {
+                store.remove(K.mediaStoreCheckpoints)
+            } else {
+                store[K.mediaStoreCheckpoints] = encodeMediaStoreCheckpoints(values)
+            }
+            // Older generations do not contain a MediaStore version and are unsafe
+            // to use as a delta boundary after a provider database rebuild.
+            store.remove(K.mediaStoreGenerations)
+            store.remove(K.mediaStoreGeneration)
+        }
     }
 
     suspend fun update(block: (Prefs) -> Prefs) {

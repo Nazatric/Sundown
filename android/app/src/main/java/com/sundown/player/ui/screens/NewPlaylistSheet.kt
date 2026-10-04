@@ -20,6 +20,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.sundown.player.data.db.TrackEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.sundown.player.ui.components.*
 import com.sundown.player.ui.icons.SIcon
 import com.sundown.player.ui.icons.SundownIcon
@@ -40,11 +42,14 @@ fun NewPlaylistContent(
     var filter by remember { mutableStateOf("") }
     val selection = remember { mutableStateListOf<String>().apply { addAll(seedIds) } }
 
-    val visible = remember(tracks, filter) {
-        val needle = filter.trim()
-        val sorted = tracks.sortedWith(compareBy({ it.artist.lowercase() }, { it.title.lowercase() }))
-        if (needle.isBlank()) sorted
-        else sorted.filter { "${it.title} ${it.artist} ${it.album}".contains(needle, true) }
+    var visible by remember { mutableStateOf(emptyList<TrackEntity>()) }
+    LaunchedEffect(tracks, filter) {
+        visible = withContext(Dispatchers.Default) {
+            val needle = filter.trim()
+            val sorted = tracks.sortedWith(compareBy({ it.artist.lowercase() }, { it.title.lowercase() }))
+            if (needle.isBlank()) sorted
+            else sorted.filter { "${it.title} ${it.artist} ${it.album}".contains(needle, true) }
+        }
     }
 
     SheetToolbar(

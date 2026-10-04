@@ -17,6 +17,8 @@ data class TrackEntity(
     val name: String,
     val size: Long,
     val mtime: Long,
+    /** Opaque MediaStore version for this row; null for SAF and one-off files. */
+    val sourceVersion: String?,
     val title: String,
     val artist: String,
     val album: String,
@@ -51,11 +53,14 @@ interface LibraryDao {
     @Query("SELECT * FROM tracks")
     suspend fun allTracks(): List<TrackEntity>
 
-    @Query("SELECT id, docUri, path, size, mtime, artId FROM tracks WHERE source = :source")
+    @Query("SELECT id, docUri, path, size, mtime, sourceVersion, artId FROM tracks WHERE source = :source")
     suspend fun fingerprints(source: String): List<FingerprintRow>
 
     @Query("SELECT DISTINCT artId FROM tracks WHERE artId IS NOT NULL")
     suspend fun referencedArtworkIds(): List<String>
+
+    @Query("SELECT * FROM tracks WHERE artId = :artId LIMIT 1")
+    suspend fun trackForArtwork(artId: String): TrackEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(tracks: List<TrackEntity>)
@@ -94,10 +99,11 @@ data class FingerprintRow(
     val path: String,
     val size: Long,
     val mtime: Long,
+    val sourceVersion: String?,
     val artId: String?,
 )
 
-@Database(entities = [TrackEntity::class, PlaylistEntity::class], version = 2, exportSchema = false)
+@Database(entities = [TrackEntity::class, PlaylistEntity::class], version = 3, exportSchema = false)
 abstract class SundownDatabase : RoomDatabase() {
     abstract fun libraryDao(): LibraryDao
 
@@ -111,6 +117,12 @@ abstract class SundownDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `tracks` ADD COLUMN `sourceVersion` TEXT")
+            }
+        }
+
         fun get(context: android.content.Context): SundownDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -118,7 +130,7 @@ abstract class SundownDatabase : RoomDatabase() {
                     SundownDatabase::class.java,
                     "sundown-music.db",
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { instance = it }
             }

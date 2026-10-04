@@ -3,7 +3,7 @@
 ## Viewport & unit mapping
 
 This is a measured design target, not a screenshot-validated native result.
-Implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5` passed Android/Rust CI tests and debug APK assembly (run [37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273)); no device screenshot comparison has been performed.
+Earlier implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5` passed Android/Rust CI tests and debug APK assembly (run [37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273)). That historical run does not validate the current revision; no device screenshot comparison has been performed.
 
 The original design was mobile-first, authored against a 9:16 Android phone with
 `<meta viewport width=device-width>`. On Android Chrome the layout viewport in

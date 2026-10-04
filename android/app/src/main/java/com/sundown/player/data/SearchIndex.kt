@@ -24,12 +24,15 @@ class SearchIndex(context: Context) : Closeable {
     @Synchronized
     fun synchronize(tracks: List<TrackEntity>) {
         val db = openDatabase() ?: return
-        val previous = documents ?: readDocuments(db).also { documents = it }
+        val previous = documents ?: run {
+            ready = false
+            return
+        }
         val current = HashMap<String, String>(tracks.size)
         val changed = ArrayList<SearchDocument>()
 
         tracks.forEach { track ->
-            val text = searchText(track)
+            val text = track.searchDocumentText()
             current[track.id] = text
             if (previous[track.id] != text) changed += SearchDocument(track.id, text)
         }
@@ -41,8 +44,12 @@ class SearchIndex(context: Context) : Closeable {
             return
         }
 
+        ready = false
+        var transactionStarted = false
+        var transactionSuccessful = false
         try {
             db.beginTransaction()
+            transactionStarted = true
             val values = ContentValues(2)
             changed.forEach { document ->
                 values.clear()
@@ -57,12 +64,18 @@ class SearchIndex(context: Context) : Closeable {
                 db.delete("search_documents", "id IN ($placeholders)", batch.toTypedArray())
             }
             db.setTransactionSuccessful()
-            ready = true
-            documents = current
+            transactionSuccessful = true
         } catch (_: Exception) {
-            ready = false
+            transactionSuccessful = false
         } finally {
-            runCatching { db.endTransaction() }
+            if (transactionStarted) {
+                runCatching { db.endTransaction() }
+                    .onFailure { transactionSuccessful = false }
+            }
+        }
+        if (transactionSuccessful) {
+            documents = current
+            ready = true
         }
     }
 
@@ -99,7 +112,7 @@ class SearchIndex(context: Context) : Closeable {
         // whose documents have not reached SQLite yet to avoid transient false
         // negatives during a scan/update race.
         val notYetIndexed = tracks.asSequence()
-            .filter { indexedDocuments[it.id] != searchText(it) }
+            .filter { it.matchesPendingSearch(indexedDocuments[it.id], query) }
             .map(TrackEntity::id)
             .toSet()
         return if (notYetIndexed.isEmpty()) matches else matches + notYetIndexed
@@ -114,6 +127,8 @@ class SearchIndex(context: Context) : Closeable {
         database = null
         documents = null
         ready = false
+        supported = false
+        initializationAttempted = false
     }
 
     @Synchronized
@@ -126,8 +141,11 @@ class SearchIndex(context: Context) : Closeable {
         }.getOrNull() ?: return null
         database = db
 
+        var transactionStarted = false
+        var transactionSuccessful = false
         try {
             db.beginTransaction()
+            transactionStarted = true
             if (db.version != DATABASE_VERSION) {
                 db.execSQL("DROP TRIGGER IF EXISTS search_documents_ai")
                 db.execSQL("DROP TRIGGER IF EXISTS search_documents_ad")
@@ -158,20 +176,36 @@ class SearchIndex(context: Context) : Closeable {
             )
             db.version = DATABASE_VERSION
             db.setTransactionSuccessful()
-            supported = true
-            documents = readDocuments(db)
+            transactionSuccessful = true
         } catch (_: Exception) {
+            transactionSuccessful = false
+        } finally {
+            if (transactionStarted) {
+                runCatching { db.endTransaction() }
+                    .onFailure { transactionSuccessful = false }
+            }
+        }
+        if (!transactionSuccessful) {
             supported = false
             documents = null
             runCatching { db.close() }
             database = null
-        } finally {
-            runCatching { if (db.inTransaction()) db.endTransaction() }
+            return null
         }
-        return database.takeIf { supported }
+
+        val loadedDocuments = readDocuments(db)
+        if (loadedDocuments == null) {
+            supported = false
+            runCatching { db.close() }
+            database = null
+            return null
+        }
+        supported = true
+        documents = loadedDocuments
+        return db
     }
 
-    private fun readDocuments(db: SQLiteDatabase): Map<String, String> =
+    private fun readDocuments(db: SQLiteDatabase): Map<String, String>? =
         runCatching {
             db.rawQuery("SELECT id, text FROM search_documents", null).use { cursor ->
                 buildMap(cursor.count) {
@@ -180,10 +214,7 @@ class SearchIndex(context: Context) : Closeable {
                     while (cursor.moveToNext()) put(cursor.getString(idColumn), cursor.getString(textColumn))
                 }
             }
-        }.getOrDefault(emptyMap())
-
-    private fun searchText(track: TrackEntity): String =
-        "${track.title} ${track.artist} ${track.album} ${track.genre}"
+        }.getOrNull()
 
     private fun canAccelerate(query: String): Boolean =
         query.length >= MIN_QUERY_LENGTH && query.all { it.code in ASCII_PRINTABLE_RANGE }
@@ -192,7 +223,8 @@ class SearchIndex(context: Context) : Closeable {
 
     private companion object {
         const val DATABASE_NAME = "sundown-search.db"
-        const val DATABASE_VERSION = 2
+        // Search-document field changes must rebuild both the source table and FTS5 rows.
+        const val DATABASE_VERSION = 3
         const val DELETE_BATCH_SIZE = 400
         const val MIN_QUERY_LENGTH = 3
         val ASCII_PRINTABLE_RANGE = 0x20..0x7E

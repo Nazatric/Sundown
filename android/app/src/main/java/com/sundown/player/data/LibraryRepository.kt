@@ -64,8 +64,22 @@ class LibraryRepository(
     private val _messages = Channel<String>(Channel.BUFFERED)
     val messages: Flow<String> = _messages.receiveAsFlow()
 
-    fun hasFolderAccess(treeUri: String?): Boolean =
+    init {
+        artwork.setMissingArtworkProvider(::loadEvictedArtworkPreview)
+    }
+
+    private suspend fun loadEvictedArtworkPreview(artId: String, small: Boolean): ByteArray? = withContext(Dispatchers.IO) {
+        val track = dao.trackForArtwork(artId) ?: return@withContext null
+        val picture = extractor.read(Uri.parse(track.docUri), track.title).picture ?: return@withContext null
+        val expectedId = ARTWORK_ID_PREFIX + SundownCore.artworkKey(picture)
+        if (expectedId != artId) return@withContext null
+        val previews = artworkDecode.withPermit { SundownCore.makeArtPreviews(picture) } ?: return@withContext null
+        if (small) previews.small else previews.large
+    }
+
+    suspend fun hasFolderAccess(treeUri: String?): Boolean = withContext(Dispatchers.IO) {
         treeUri != null && runCatching { saf.hasAccess(Uri.parse(treeUri)) }.getOrDefault(false)
+    }
 
     suspend fun connectFolder(treeUri: Uri) = withContext(Dispatchers.IO) {
         val previous = prefs.flow.first()
@@ -154,9 +168,10 @@ class LibraryRepository(
         var completed = false
         try {
             _progress.value = ScanProgress("reading", 0, 0, "Device Music")
-            val found = mediaStore.scan { count ->
+            val snapshot = mediaStore.scan(prefs.mediaStoreCheckpoints()) { count ->
                 _progress.value = ScanProgress("reading", count, 0, "Device Music")
-            }.map { f ->
+            }
+            val found = snapshot.changedTracks.map { f ->
                 SafSource.Found(
                     id = f.id,
                     docUri = f.docUri,
@@ -164,15 +179,16 @@ class LibraryRepository(
                     name = f.name,
                     size = f.size,
                     mtime = f.mtime,
+                    sourceVersion = f.sourceVersion,
                 )
             }
             val known = dao.fingerprints(SOURCE_MEDIA).associateBy { it.id }
             val toParse = found.filter { file -> requiresParse(file, known[file.id]) }
             val result = parseAll(toParse, source = SOURCE_MEDIA)
-            val seen = found.mapTo(HashSet()) { it.id }
-            val removed = known.keys.filter { it !in seen }
+            val removed = known.keys.filter { it !in snapshot.currentIds }
             if (result.failed == 0) {
                 deleteIds(removed)
+                prefs.setMediaStoreCheckpoints(snapshot.checkpoints)
                 completed = true
                 pruneArtworkSafely()
             }
@@ -181,9 +197,9 @@ class LibraryRepository(
                     if (result.failed > 0) {
                         "Could not read ${result.failed} device songs; existing entries were kept."
                     } else if (toParse.isEmpty() && removed.isEmpty()) {
-                        "Device music is up to date with ${found.size} songs."
+                        "Device music is up to date with ${snapshot.currentIds.size} songs."
                     } else {
-                        "Device music updated: ${found.size} songs, ${result.parsed} new or changed, ${removed.size} removed."
+                        "Device music updated: ${snapshot.currentIds.size} songs, ${result.parsed} new or changed, ${removed.size} removed."
                     },
                 )
             }
@@ -217,6 +233,7 @@ class LibraryRepository(
                     name = name,
                     size = queryLong(uri, OpenableColumns.SIZE),
                     mtime = 0,
+                    sourceVersion = null,
                 )
             }.distinctBy(SafSource.Found::id)
             val known = dao.fingerprints(SOURCE_FILE).associateBy { it.id }
@@ -243,6 +260,7 @@ class LibraryRepository(
         previous == null ||
             previous.docUri != file.docUri ||
             previous.path != file.path ||
+            previous.sourceVersion != file.sourceVersion ||
             previous.size != file.size ||
             previous.mtime != file.mtime ||
             (previous.artId?.let { !it.startsWith(ARTWORK_ID_PREFIX) || artwork.needsRebuild(it) } == true)
@@ -342,6 +360,7 @@ class LibraryRepository(
             name = file.name,
             size = file.size,
             mtime = file.mtime,
+            sourceVersion = file.sourceVersion,
             title = tags.title.ifBlank { fallbackTitle },
             artist = artist,
             album = album,
@@ -383,10 +402,12 @@ class LibraryRepository(
             return@withContext
         }
         try {
+            // Force the next Device Music query to include every row so missing
+            // embedded covers are reparsed even when MediaStore generations did not change.
+            prefs.setMediaStoreCheckpoints(null)
             artwork.clear()
-            // Keep art IDs: the next rescan detects missing cache files and
-            // reparses only tracks whose artwork was actually evicted.
-            _messages.send("Artwork cache cleared. Rescan the folder to rebuild covers.")
+            // Keep art IDs: the next source scan reparses only tracks whose artwork was cleared.
+            _messages.send("Artwork cache cleared. Rescan your music sources to rebuild covers.")
         } finally {
             scanLock.unlock()
         }
@@ -404,6 +425,9 @@ class LibraryRepository(
                     (if (grant.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
                 runCatching { context.contentResolver.releasePersistableUriPermission(grant.uri, flags) }
             }
+            // A cleared database cannot be repopulated by a delta query; discard
+            // the generation checkpoint before removing its Room rows.
+            prefs.setMediaStoreCheckpoints(null)
             dao.clearTracks()
             dao.clearPlaylists()
             artwork.clear()

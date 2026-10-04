@@ -18,4 +18,4 @@ The Gradle build compiles `sundown-core` for all supported ABIs and generates Ko
 
 ## Validation
 
-Implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5` passed Rust tests, Android unit tests and debug APK assembly in [GitHub Actions run 37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273). This sandbox did not perform a local build or device test. See [`docs/BUILD.md`](docs/BUILD.md) and the repository's [`NATIVE_VERIFICATION.md`](../NATIVE_VERIFICATION.md) for remaining checks.
+An earlier implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5` passed Rust tests, Android unit tests and debug APK assembly in [GitHub Actions run 37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273). That historical run does not validate the current revision; this sandbox lacks a local build toolchain and has no Android device. See [`docs/BUILD.md`](docs/BUILD.md) and the repository's [`NATIVE_VERIFICATION.md`](../NATIVE_VERIFICATION.md) for current evidence and remaining checks.

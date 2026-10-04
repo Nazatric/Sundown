@@ -90,7 +90,7 @@ fun Timeline(
             softWrap = false,
             overflow = TextOverflow.Clip,
         )
-        ProgressSlider(fraction, Modifier.weight(1f), enabled = snapshot.hasSource, onScrub = onScrub)
+        ProgressSlider(fraction, Modifier.weight(1f), enabled = snapshot.hasSource && duration > 0L, onScrub = onScrub)
         Text(
             remainingLabel,
             Modifier.widthIn(min = if (remainingLabel.count { it == ':' } > 1) 54.dp else D.remainingWidth),

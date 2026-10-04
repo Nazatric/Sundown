@@ -2,7 +2,7 @@
 
 This document is a reference inventory of the existing screens and behaviors. The original web design is not shipped in this native-only repository, and this inventory is not a certification of visual parity.
 
-Implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5` passed Rust unit tests, Android unit tests and debug APK assembly in GitHub Actions run [37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273). No device or screenshot validation has been performed, so this inventory remains a source mapping rather than a parity certification. See `PARITY.md` and the root `NATIVE_VERIFICATION.md` for current status.
+The latest successful CI run before the current working-tree diff is run [37156093336](https://github.com/Nazatric/Sundown/actions/runs/37156093336) at PR head `b47a81c424e1c00e71225bb6aa925dad0bc93f93`. It passed Rust/Android unit tests, debug and unsigned release-variant assembly, and ABI verification; the current diff still needs its own CI run. No device or screenshot validation has been performed, so this inventory remains a source mapping rather than a parity certification. See `PARITY.md` and the root `NATIVE_VERIFICATION.md` for current status.
 
 ## 1. Screens / destinations
 
@@ -64,8 +64,8 @@ New Playlist: Cancel · name field · song search · per-song checkboxes · Crea
 Chooser: per-playlist add (disabled when already present) · New Playlist · close.
 
 Sources: choose SAF folder · restore access · rescan · disconnect · add individual
-files · 5 start-screen choices · 4 library/playback toggles · clear artwork cache ·
-erase library data (confirm).
+files · grant or rescan local Device Music · 5 start-screen choices · 4
+library/playback toggles · clear artwork cache · erase library data (confirm).
 
 The original design included an asset-kit screen, but the native
 Sources sheet intentionally has no asset-kit option or destination.
@@ -94,7 +94,7 @@ volume, muted, shuffle, repeat, queue, hasSource).
 ## 6. Background / async work
 
 - Recursive folder walk (web: `FileSystemDirectoryHandle.values()`).
-- Incremental Kotlin diff by source identity, document URI/path, size, modification time, and (on API 30+) MediaStore generation → added / updated / removed. Metadata/search work is performed off the UI thread; Kotlin owns scanning and indexing.
+- Incremental Kotlin diff by source identity, document URI/path, size, modification time, and per-volume MediaStore version/generation checkpoint on API 30+ → changed rows plus an ID-only deletion snapshot. A persisted row-level provider-version fingerprint forces metadata reparsing after a provider database rebuild (Room migration v2→v3). If the version changes or cannot be read, the scan falls back to a full metadata query. Metadata/search work is performed off the UI thread; Kotlin owns scanning and indexing.
 - Metadata parse pool (web: 2–4 Blob workers) → Rust + Kotlin coroutine
   dispatcher (`Dispatchers.IO.limitedParallelism`, clamped to 2–4).
 - Artwork center-crop to up to 1024 px and 160 px JPEG q92 previews; small source art is not upscaled. Rust decoding has source-size limits, and cover conversions are serialized during scans to bound transient heap use.

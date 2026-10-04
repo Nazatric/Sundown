@@ -131,7 +131,7 @@ pub fn build_index(tracks: &[TrackLite]) -> LibraryIndex {
     LibraryIndex { albums: album_list, artists: artist_list, genres }
 }
 
-/// Case-insensitive match across title, artist and album.
+/// Case-insensitive substring match across every user-facing track search field.
 pub fn search_tracks(tracks: &[TrackLite], query: &str) -> Vec<String> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
@@ -140,7 +140,7 @@ pub fn search_tracks(tracks: &[TrackLite], query: &str) -> Vec<String> {
     tracks
         .iter()
         .filter(|t| {
-            format!("{} {} {}", t.title, t.artist, t.album)
+            format!("{} {} {} {} {}", t.title, t.artist, t.album, t.album_artist, t.genre)
                 .to_lowercase()
                 .contains(&needle)
         })
@@ -184,6 +184,33 @@ pub fn diff(existing: &[Fingerprint], found: &[Fingerprint]) -> ScanDiff {
         .collect();
 
     ScanDiff { to_parse, removed_ids, unchanged }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_tracks;
+    use crate::model::TrackLite;
+
+    #[test]
+    fn search_includes_album_artist_and_genre_substrings() {
+        let track = TrackLite {
+            id: "track-1".into(),
+            title: "Evening Light".into(),
+            artist: "The Northern Lights".into(),
+            album: "First Horizon".into(),
+            album_artist: "Aurora Collective".into(),
+            genre: "Ambient".into(),
+            track_no: 1,
+            disc_no: 1,
+            year: 2026,
+            duration: 180,
+            art_id: None,
+        };
+
+        assert_eq!(search_tracks(&[track.clone()], "RORA COL"), vec!["track-1".to_string()]);
+        assert_eq!(search_tracks(&[track.clone()], "mbie"), vec!["track-1".to_string()]);
+        assert!(search_tracks(&[track], "aurora collective plus").is_empty());
+    }
 }
 
 /// First index whose sort key starts with `letter` ('#' = non-alphabetic).

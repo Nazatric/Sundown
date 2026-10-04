@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.sundown.player.ui.theme.*
+import kotlinx.coroutines.delay
 
 /**
  * `.progress-range` — 8 dp inset track, concentric 19 dp thumb.
@@ -39,14 +40,42 @@ fun ProgressSlider(
 ) {
     var widthPx by remember { mutableIntStateOf(0) }
     var dragging by remember { mutableStateOf(false) }
+    var previewActive by remember { mutableStateOf(false) }
+    var previewRevision by remember { mutableIntStateOf(0) }
+    var previewProgress by remember { mutableFloatStateOf(fraction.coerceIn(0f, 1f)) }
     val density = LocalDensity.current
     val clamped = fraction.coerceIn(0f, 1f)
+    val latestClamped by rememberUpdatedState(clamped)
+    val latestOnScrub by rememberUpdatedState(onScrub)
+
+    fun scrubTo(value: Float) {
+        previewProgress = value.coerceIn(0f, 1f)
+        previewActive = true
+        previewRevision += 1
+        latestOnScrub(previewProgress)
+    }
+
+    LaunchedEffect(previewRevision) {
+        if (previewActive) {
+            delay(700)
+            previewActive = false
+        }
+    }
+    LaunchedEffect(clamped) {
+        if (previewActive && kotlin.math.abs(clamped - previewProgress) <= 0.002f) {
+            previewActive = false
+        }
+    }
     val animatedProgress by animateFloatAsState(
         targetValue = clamped,
         animationSpec = tween(250, easing = LinearEasing),
         label = "progress",
     )
-    val displayedProgress = if (dragging) clamped else animatedProgress
+    val displayedProgress = when {
+        dragging -> previewProgress
+        previewActive -> previewProgress
+        else -> animatedProgress
+    }
 
     Box(
         modifier = modifier
@@ -54,17 +83,19 @@ fun ProgressSlider(
             .onSizeChanged { widthPx = it.width }
             .pointerInput(enabled, widthPx) {
                 if (!enabled || widthPx == 0) return@pointerInput
-                detectTapGestures { offset -> onScrub((offset.x / widthPx).coerceIn(0f, 1f)) }
+                detectTapGestures { offset -> scrubTo(offset.x / widthPx) }
             }
             .pointerInput(enabled, widthPx) {
                 if (!enabled || widthPx == 0) return@pointerInput
                 detectHorizontalDragGestures(
-                    onDragStart = { dragging = true },
+                    onDragStart = {
+                        dragging = true
+                        previewProgress = latestClamped
+                        previewActive = false
+                    },
                     onDragEnd = { dragging = false },
                     onDragCancel = { dragging = false },
-                    onHorizontalDrag = { change, _ ->
-                        onScrub((change.position.x / widthPx).coerceIn(0f, 1f))
-                    },
+                    onHorizontalDrag = { change, _ -> scrubTo(change.position.x / widthPx) },
                 )
             },
         contentAlignment = Alignment.CenterStart,

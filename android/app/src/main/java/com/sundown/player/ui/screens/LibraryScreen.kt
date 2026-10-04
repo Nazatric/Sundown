@@ -24,6 +24,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.sundown.player.data.db.PlaylistEntity
 import com.sundown.player.data.db.TrackEntity
 import com.sundown.player.ui.*
 import com.sundown.player.ui.components.*
@@ -38,8 +39,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 private val TABS = listOf("Artists", "Albums", "Songs", "Genres", "Playlists")
+private val COMPACT_TAB_WEIGHTS = listOf(1f, 1f, 1f, 1f, 1.45f)
 private val ALPHABET = ('A'..'Z').map(Char::toString) + "#"
 
 /** Matches the Rust native sort key's leading-article rule and its ASCII A–Z index. */
@@ -124,39 +127,27 @@ fun LibraryScreen(
     val gridState = rememberLazyGridState()
     val songsState = rememberLazyListState()
     var currentLetter by remember { mutableStateOf<String?>(null) }
-    val indexTargets = remember(state.tab, state.albums, state.artists, state.songs) { alphabetTargets(state) }
+    var indexTargets by remember { mutableStateOf(emptyMap<String, Int>()) }
+    LaunchedEffect(state.tab, state.albums, state.artists, state.songs) {
+        indexTargets = withContext(Dispatchers.Default) { alphabetTargets(state) }
+    }
     val artworkLoader = LocalArtworkLoader.current
     val visibleGridIndices by remember(gridState) {
         derivedStateOf { gridState.layoutInfo.visibleItemsInfo.mapTo(HashSet()) { it.index } }
     }
     val revealedTileKeys = remember { HashSet<String>() }
-    val tracksById = state.tracksById
+    val playlistTrackCountsById = state.playlistTrackCountsById
+    val playlistFirstArtIdById = state.playlistFirstArtIdById
     val albumsByGenre = state.albumsByGenre
-    val galleryArtwork = remember(
-        state.tab, state.albums, state.artists, state.genres, state.playlists, tracksById, albumsByGenre,
+    LaunchedEffect(
+        artworkLoader, state.tab, state.albums, state.artists, state.genres, state.playlists,
+        playlistFirstArtIdById, albumsByGenre, state.prefs.highArt, columns,
     ) {
-        when (state.tab) {
-            LibraryTab.Albums -> state.albums.map { item ->
-                GalleryItemArtwork("album:${item.key}", listOfNotNull(item.artId))
-            }
-            LibraryTab.Artists -> state.artists.map { item ->
-                GalleryItemArtwork("artist:${item.key}", listOfNotNull(item.artId, item.rearArtId))
-            }
-            LibraryTab.Genres -> state.genres.map { genre ->
-                val albums = albumsByGenre[genre].orEmpty()
-                GalleryItemArtwork("genre:$genre", listOfNotNull(albums.getOrNull(0)?.artId, albums.getOrNull(1)?.artId))
-            }
-            LibraryTab.Playlists -> state.playlists.map { playlist ->
-                val artId = playlist.ids().firstNotNullOfOrNull { tracksById[it]?.artId }
-                GalleryItemArtwork("playlist:${playlist.id}", listOfNotNull(artId))
-            }
-            LibraryTab.Songs -> emptyList()
-        }
-    }
-
-    LaunchedEffect(artworkLoader, state.tab, galleryArtwork, state.prefs.highArt, columns) {
         val loader = artworkLoader ?: return@LaunchedEffect
         if (state.tab == LibraryTab.Songs) return@LaunchedEffect
+        val galleryArtwork = withContext(Dispatchers.Default) {
+            buildGalleryArtwork(state.tab, state.albums, state.artists, state.genres, state.playlists, playlistFirstArtIdById, albumsByGenre)
+        }
         snapshotFlow {
             val visible = gridState.layoutInfo.visibleItemsInfo
             if (visible.isEmpty() || galleryArtwork.isEmpty()) emptyList()
@@ -382,12 +373,12 @@ fun LibraryScreen(
                                 state.playlists,
                                 key = { _, playlist -> "playlist:${playlist.id}" },
                             ) { index, playlist ->
-                                val ids = playlist.ids()
-                                val first = ids.firstNotNullOfOrNull { tracksById[it] }
+                                val songCount = playlistTrackCountsById[playlist.id] ?: 0
+                                val firstArtId = playlistFirstArtIdById[playlist.id]
                                 GalleryTile(
                                     label = playlist.name,
-                                    detail = "${ids.size} Songs",
-                                    artId = first?.artId,
+                                    detail = "$songCount Songs",
+                                    artId = firstArtId,
                                     rearArtId = null,
                                     coverSize = cover,
                                     index = index,
@@ -473,7 +464,28 @@ fun LibraryScreen(
     }
 }
 
-private data class GalleryItemArtwork(val revealKey: String, val artIds: List<String>)
+private data class GalleryItemArtwork(val artIds: List<String>)
+
+private fun buildGalleryArtwork(
+    tab: LibraryTab,
+    albums: List<AlbumGroup>,
+    artists: List<ArtistGroup>,
+    genres: List<String>,
+    playlists: List<PlaylistEntity>,
+    playlistFirstArtIdById: Map<String, String?>,
+    albumsByGenre: Map<String, List<AlbumGroup>>,
+): List<GalleryItemArtwork> = when (tab) {
+    LibraryTab.Albums -> albums.map { item -> GalleryItemArtwork(listOfNotNull(item.artId)) }
+    LibraryTab.Artists -> artists.map { item -> GalleryItemArtwork(listOfNotNull(item.artId, item.rearArtId)) }
+    LibraryTab.Genres -> genres.map { genre ->
+        val genreAlbums = albumsByGenre[genre].orEmpty()
+        GalleryItemArtwork(listOfNotNull(genreAlbums.getOrNull(0)?.artId, genreAlbums.getOrNull(1)?.artId))
+    }
+    LibraryTab.Playlists -> playlists.map { playlist ->
+        GalleryItemArtwork(listOfNotNull(playlistFirstArtIdById[playlist.id]))
+    }
+    LibraryTab.Songs -> emptyList()
+}
 
 private suspend fun preloadArtwork(loader: ArtworkLoader, artIds: List<String>, small: Boolean) = coroutineScope {
     val permits = Semaphore(4)
@@ -600,10 +612,11 @@ private fun LibraryToolbar(
             }
             SegmentedControl(
                 TABS, selectedTab, Modifier.fillMaxWidth(),
-                fontSize = if (narrow) 11.5f else 13f,
-                // Keep the full “Playlists” label inside the equal-width compact tabs;
-                // save space in the tab cell rather than shrinking the toolbar.
-                horizontalPadding = if (narrow) 2.dp else D.segmentPadH,
+                fontSize = 13f,
+                // Preserve the label size on compact phones; give the longest label
+                // a wider cell and reclaim a few dp from each segment's side padding.
+                horizontalPadding = if (narrow) 3.dp else D.segmentPadH,
+                weights = if (narrow) COMPACT_TAB_WEIGHTS else null,
                 onSelect = onTab,
             )
         }

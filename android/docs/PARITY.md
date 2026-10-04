@@ -11,7 +11,7 @@ The earlier design inventory is retained as a reference. The repository itself i
 | Album/playlist sheets, favorites and queue UI | Existing Compose sheet components and `PlayerController` | Present; runtime unverified |
 | A–Z navigation and sorting | Existing `AlphabetIndex`, Kotlin/Rust normalized sort keys | Present; device behavior unverified |
 | SAF folder and one-off file sources | Persisted SAF tree grants and `ACTION_OPEN_DOCUMENT` URI access | Present; provider/device behavior unverified |
-| MediaStore device library | API-specific audio permission, MediaStore scan, path/generation fingerprints and debounced content observer | Present; permission/provider behavior unverified |
+| MediaStore device library | API-specific audio permission, per-volume MediaStore version/generation checkpoints, ID-based deletion snapshot and debounced content observer | Present; permission/provider behavior unverified |
 | Incremental scan and Room storage | Kotlin source fingerprints, changed-row parse pool, batched Room writes/deletes and guarded prune | Present; large-library performance unverified |
 | Metadata and duration | `MediaMetadataRetriever` plus bounded Rust ID3/MP4/FLAC/OGG/WAV parsing and persisted duration | Present; codec/tag coverage unverified |
 | Artwork preview and caching | Up to 1024/160 px previews, content-derived IDs, memory LRU, bounded disk cache, decode coalescing and preload | Present; image quality/memory behavior unverified |
@@ -37,17 +37,17 @@ Tabs remain top-level rather than adding history entries. This describes source 
 | Category | Status | Evidence / limitation |
 |---|---|---|
 | Repository/native-only/offline audit | PASS (source) | Tracked source inventory found no web runtime, network permission, SVG artwork assets, or iOS project. |
-| UI/UX lock | PASS (diff scope) | No screen, component, theme, typography, color, spacing, or navigation-layout files were changed. Screenshot/device parity is UNVERIFIED. |
+| Reference UI fidelity and interaction geometry | UNVERIFIED (screenshots/device) | Existing Compose screens and components were adjusted for the requested compact “Playlists” label, A–Z interaction, artwork presentation/cache, slider preview and Sources close behavior. No reference screenshot is present, so pixel parity and device interaction remain unverified; this was not a redesign. |
 | MediaStore/SAF/permissions | PASS (source) | Implementations and permission branches inspected; device/provider behavior is UNVERIFIED. |
-| Incremental indexing, metadata, artwork, queue and state fixes | PASS (source / CI build) | Changes reviewed and the implementation commit compiled in CI; runtime behavior is UNVERIFIED. |
+| Incremental indexing, metadata, artwork, queue and state fixes | PASS (source review) / UNVERIFIED (current CI and runtime) | The current diff adds source-level changes beyond the last green PR-head build; CI for this diff is pending, and runtime behavior remains UNVERIFIED. |
 | Room migration / FTS5 | PASS (source) | Migration and fallback paths inspected; Android SQLite/FTS availability and large-library performance are UNVERIFIED. |
 | XML/resource and diff checks | PASS | `NATIVE_VERIFICATION.md` records XML parsing, manifest, source-inventory and diff checks; these do not replace a build. |
-| Android/Rust build and unit-test execution | PASS (CI) / BLOCKED locally | GitHub Actions run [37152109273](https://github.com/Nazatric/Sundown/actions/runs/37152109273) passed Rust tests, Android unit tests and debug APK assembly for implementation commit `0466d274ce18f5851d332fcf6ae1a98b2d384ad5`; local toolchain is unavailable. |
+| Android/Rust build and unit-test execution | PASS (last committed PR head) / UNVERIFIED (current diff) / BLOCKED locally | GitHub Actions run [37156093336](https://github.com/Nazatric/Sundown/actions/runs/37156093336) passed Rust tests, Android unit tests, debug APK assembly, unsigned release-variant assembly and ABI verification for PR head `b47a81c424e1c00e71225bb6aa925dad0bc93f93`. It predates the current working-tree changes; those must pass CI after push. Java, Gradle, Cargo and Android SDK tools are unavailable locally. |
 | Device install, playback, notification, SAF, screenshots and performance | UNVERIFIED | No emulator or physical Android device is available here. |
 | Signed universal APK | BLOCKED | CI assembled/uploaded the debug APK. Signed release packaging was skipped because signing secrets are not configured; no signed artifact is claimed. |
 | IPA | BLOCKED / NOT APPLICABLE | No genuine native iOS project is present. |
 
-Older CI run IDs or commit hashes documented by previous snapshots have intentionally been removed: they do not validate the current source revision.
+CI evidence is commit-scoped. Older implementation run IDs remain in historical notes such as `PIXEL_SPEC.md` and `android/README.md`; they are not evidence for a newer source revision. The table above identifies the latest verified commit available when this snapshot was updated.
 
 ## Local reproduction and device validation still needed
 

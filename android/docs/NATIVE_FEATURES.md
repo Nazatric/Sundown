@@ -6,6 +6,7 @@ Sundown is Android-native and offline-only. Kotlin/Compose owns the UI and Andro
 
 - One-time first-launch local-audio permission request (`READ_MEDIA_AUDIO` on Android 13+, `READ_EXTERNAL_STORAGE` on Android 12 and earlier), live PackageManager re-checks on resume, and a queued scan immediately after grant. Permission denial is represented honestly; SAF remains independent.
 - SAF folder access with persisted grants, path/document-URI/size/mtime fingerprints, and pruning only after a complete provider walk and successful parsing pass.
+- MediaStore updates query changed rows with per-volume version/generation checkpoints where supported, force a full metadata scan after provider-version changes, observe each discovered external volume, and retain an ID-only current snapshot to verify deletions.
 - Incremental one-off file ingestion that avoids reparsing unchanged imports.
 - Hybrid metadata extraction: `MediaMetadataRetriever` supplies duration and broad container compatibility; the bounded Rust parser fills tag/art gaps, including ID3v2.2 text and `PIC` frames.
 - Real duration persistence and shared `mm:ss` / `h:mm:ss` formatting.

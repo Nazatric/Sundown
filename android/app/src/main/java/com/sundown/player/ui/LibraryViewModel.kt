@@ -8,6 +8,7 @@ import com.sundown.player.data.ArtworkStore
 import com.sundown.player.data.LibraryRepository
 import com.sundown.player.data.ScanProgress
 import com.sundown.player.data.SearchIndex
+import com.sundown.player.data.matchesSearch
 import com.sundown.player.data.db.PlaylistEntity
 import com.sundown.player.data.db.TrackEntity
 import com.sundown.player.data.prefs.Prefs
@@ -16,10 +17,12 @@ import com.sundown.player.nativecore.SundownCore
 import com.sundown.player.playback.PlayerController
 import com.sundown.player.playback.PlayerSnapshot
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -56,15 +59,22 @@ data class LibraryUiState(
     val artistFilter: String? = null,
     val favoritesOnly: Boolean = false,
     val tracks: List<TrackEntity> = emptyList(),
+    val sessionTrackCount: Int = 0,
     val allAlbums: List<AlbumGroup> = emptyList(),
+    val allAlbumsByKey: Map<String, AlbumGroup> = emptyMap(),
     val albums: List<AlbumGroup> = emptyList(),
     val allArtists: List<ArtistGroup> = emptyList(),
+    val allArtistsByKey: Map<String, ArtistGroup> = emptyMap(),
     val artists: List<ArtistGroup> = emptyList(),
     val tracksById: Map<String, TrackEntity> = emptyMap(),
     val albumsByGenre: Map<String, List<AlbumGroup>> = emptyMap(),
     val genres: List<String> = emptyList(),
     val songs: List<TrackEntity> = emptyList(),
     val playlists: List<PlaylistEntity> = emptyList(),
+    val playlistsById: Map<String, PlaylistEntity> = emptyMap(),
+    val playlistTrackCountsById: Map<String, Int> = emptyMap(),
+    val playlistTrackIdSetsById: Map<String, Set<String>> = emptyMap(),
+    val playlistFirstArtIdById: Map<String, String?> = emptyMap(),
     val favorites: Set<String> = emptySet(),
     val prefs: Prefs = Prefs(),
     val scan: ScanProgress? = null,
@@ -77,7 +87,7 @@ data class LibraryUiState(
         get() = when {
             favoritesOnly -> "Favorites"
             genreFilter != null -> genreFilter
-            artistFilter != null -> allArtists.firstOrNull { it.key == artistFilter }?.name.orEmpty()
+            artistFilter != null -> allArtistsByKey[artistFilter]?.name.orEmpty()
             else -> ""
         }
 }
@@ -129,8 +139,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private data class LibraryContent(
         val tracks: List<TrackEntity> = emptyList(),
+        val sessionTrackCount: Int = 0,
         val allAlbums: List<AlbumGroup> = emptyList(),
+        val allAlbumsByKey: Map<String, AlbumGroup> = emptyMap(),
         val allArtists: List<ArtistGroup> = emptyList(),
+        val allArtistsByKey: Map<String, ArtistGroup> = emptyMap(),
         val genres: List<String> = emptyList(),
         val tracksById: Map<String, TrackEntity> = emptyMap(),
         val albumsByGenre: Map<String, List<AlbumGroup>> = emptyMap(),
@@ -139,15 +152,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private data class FilteredContent(
         val tracks: List<TrackEntity> = emptyList(),
+        val sessionTrackCount: Int = 0,
         val allAlbums: List<AlbumGroup> = emptyList(),
+        val allAlbumsByKey: Map<String, AlbumGroup> = emptyMap(),
         val albums: List<AlbumGroup> = emptyList(),
         val allArtists: List<ArtistGroup> = emptyList(),
+        val allArtistsByKey: Map<String, ArtistGroup> = emptyMap(),
         val artists: List<ArtistGroup> = emptyList(),
         val genres: List<String> = emptyList(),
         val tracksById: Map<String, TrackEntity> = emptyMap(),
         val albumsByGenre: Map<String, List<AlbumGroup>> = emptyMap(),
         val songs: List<TrackEntity> = emptyList(),
         val playlists: List<PlaylistEntity> = emptyList(),
+        val playlistsById: Map<String, PlaylistEntity> = emptyMap(),
+        val playlistTrackCountsById: Map<String, Int> = emptyMap(),
+        val playlistTrackIdSetsById: Map<String, Set<String>> = emptyMap(),
+        val playlistFirstArtIdById: Map<String, String?> = emptyMap(),
         val favorites: Set<String> = emptySet(),
     )
 
@@ -175,6 +195,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * Progress, playback checkpoints and transient notices cannot redo this work.
      */
     private val libraryContent: StateFlow<LibraryContent> = repo.tracks
+        // A media scan commits bounded batches. Collapse rapid Room invalidations
+        // before rebuilding the full grouping/sort maps for a large library.
+        .conflate()
+        .debounce(160)
         .map(::buildLibraryContent)
         .distinctUntilChanged()
         .flowOn(Dispatchers.Default)
@@ -206,19 +230,33 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         contentFilters,
         favoriteSet,
     ) { library, playlists, filters, favorites ->
+        val visiblePlaylists = if (filters.search.isBlank()) playlists
+            else playlists.filter { it.name.contains(filters.search, ignoreCase = true) }
+        val playlistTrackIdsById = visiblePlaylists.associate { playlist -> playlist.id to playlist.ids() }
+        val playlistTrackCountsById = playlistTrackIdsById.mapValues { (_, ids) -> ids.size }
+        val playlistTrackIdSetsById = playlistTrackIdsById.mapValues { (_, ids) -> ids.toHashSet() }
+        val playlistFirstArtIdById = playlistTrackIdsById.mapValues { (_, ids) ->
+            ids.firstNotNullOfOrNull { library.tracksById[it]?.artId }
+        }
         FilteredContent(
             tracks = library.tracks,
+            sessionTrackCount = library.sessionTrackCount,
             allAlbums = library.allAlbums,
+            allAlbumsByKey = library.allAlbumsByKey,
             albums = filterAlbums(library.allAlbums, filters, favorites),
             allArtists = library.allArtists,
+            allArtistsByKey = library.allArtistsByKey,
             artists = filterArtists(library.allArtists, filters, favorites),
             genres = if (filters.search.isBlank()) library.genres
                 else library.genres.filter { it.contains(filters.search, ignoreCase = true) },
             tracksById = library.tracksById,
             albumsByGenre = library.albumsByGenre,
             songs = filterSongs(library.tracks, filters, favorites, library.sortNameByTrackId),
-            playlists = if (filters.search.isBlank()) playlists
-                else playlists.filter { it.name.contains(filters.search, ignoreCase = true) },
+            playlists = visiblePlaylists,
+            playlistsById = visiblePlaylists.associateBy(PlaylistEntity::id),
+            playlistTrackCountsById = playlistTrackCountsById,
+            playlistTrackIdSetsById = playlistTrackIdSetsById,
+            playlistFirstArtIdById = playlistFirstArtIdById,
             favorites = favorites,
         )
     }
@@ -236,15 +274,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             artistFilter = local.filters.artist,
             favoritesOnly = local.filters.favoritesOnly,
             tracks = content.tracks,
+            sessionTrackCount = content.sessionTrackCount,
             allAlbums = content.allAlbums,
+            allAlbumsByKey = content.allAlbumsByKey,
             albums = content.albums,
             allArtists = content.allArtists,
+            allArtistsByKey = content.allArtistsByKey,
             artists = content.artists,
             tracksById = content.tracksById,
             albumsByGenre = content.albumsByGenre,
             genres = content.genres,
             songs = content.songs,
             playlists = content.playlists,
+            playlistsById = content.playlistsById,
+            playlistTrackCountsById = content.playlistTrackCountsById,
+            playlistTrackIdSetsById = content.playlistTrackIdSetsById,
+            playlistFirstArtIdById = content.playlistFirstArtIdById,
             favorites = content.favorites,
             prefs = prefs,
             scan = scan,
@@ -261,7 +306,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // index itself applies only changed rows, even though Room emits a full
         // library snapshot after each committed scan batch.
         viewModelScope.launch(Dispatchers.IO) {
-            repo.tracks.collect { tracks -> searchIndex.synchronize(tracks) }
+            repo.tracks.debounce(160).collect { tracks -> searchIndex.synchronize(tracks) }
         }
         viewModelScope.launch {
             repo.mediaStoreChanges
@@ -357,8 +402,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         return LibraryContent(
             tracks = tracks,
+            // Sources must not walk the full library on the main thread just to
+            // count individually selected files every time its sheet recomposes.
+            sessionTrackCount = tracks.count { it.source == LibraryRepository.SOURCE_FILE },
             allAlbums = allAlbums,
+            allAlbumsByKey = allAlbums.associateBy(AlbumGroup::key),
             allArtists = allArtists,
+            allArtistsByKey = allArtists.associateBy(ArtistGroup::key),
             genres = genres,
             tracksById = tracks.associateBy(TrackEntity::id),
             albumsByGenre = allAlbums.filter { it.genre.isNotBlank() }.groupBy(AlbumGroup::genre),
@@ -424,8 +474,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 (filter.genre == null || track.genre == filter.genre) &&
                 (!filter.favoritesOnly || track.albumKey in favorites) &&
                 (filter.search.isBlank() ||
-                    ((ftsIds == null || track.id in ftsIds) &&
-                        "${track.title} ${track.artist} ${track.album} ${track.genre}".contains(filter.search, true)))
+                    ((ftsIds == null || track.id in ftsIds) && track.matchesSearch(filter.search)))
         }.sortedWith(
             compareBy(
                 { sortNameByTrackId[it.id].orEmpty() },
@@ -572,11 +621,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun savePlaylist(id: String?, name: String, trackIds: List<String>) = viewModelScope.launch {
+        val serializedIds = withContext(Dispatchers.Default) { trackIds.distinct().joinToString("\n") }
         repo.savePlaylist(
             PlaylistEntity(
                 id = id ?: "pl-${UUID.randomUUID()}",
                 name = name,
-                trackIds = trackIds.distinct().joinToString("\n"),
+                trackIds = serializedIds,
                 custom = true,
             ),
         )
@@ -584,9 +634,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addToPlaylist(playlist: PlaylistEntity, trackId: String) = viewModelScope.launch {
-        val ids = playlist.trackIds.split('\n').filter { it.isNotBlank() }
-        if (trackId in ids) return@launch
-        repo.savePlaylist(playlist.copy(trackIds = (ids + trackId).joinToString("\n")))
+        val updatedIds = withContext(Dispatchers.Default) {
+            val ids = playlist.trackIds.split('\n').filter { it.isNotBlank() }
+            if (trackId in ids) null else (ids + trackId).joinToString("\n")
+        } ?: return@launch
+        repo.savePlaylist(playlist.copy(trackIds = updatedIds))
         toast("Added to ${playlist.name}.")
     }
 
@@ -595,7 +647,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         toast("Playlist deleted.")
     }
 
-    fun hasFolderAccess(treeUri: String?) = repo.hasFolderAccess(treeUri)
+    suspend fun hasFolderAccess(treeUri: String?) = repo.hasFolderAccess(treeUri)
 
     // ---- queue --------------------------------------------------------------
 
@@ -628,7 +680,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         player.release()
-        searchIndex.close()
+        CoroutineScope(Dispatchers.IO).launch { searchIndex.close() }
         super.onCleared()
     }
 }
