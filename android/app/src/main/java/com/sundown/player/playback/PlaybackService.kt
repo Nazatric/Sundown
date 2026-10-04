@@ -60,6 +60,26 @@ class PlaybackService : MediaSessionService() {
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
                 if (hasObservedQueue) requestCheckpoint()
             }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+
+            override fun onRepeatModeChanged(repeatMode: Int) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
+
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                if (hasObservedQueue) requestCheckpoint()
+            }
         })
 
         val openApp = PendingIntent.getActivity(
@@ -75,9 +95,11 @@ class PlaybackService : MediaSessionService() {
         checkpointJob = serviceScope.launch {
             while (isActive) {
                 delay(CHECKPOINT_INTERVAL_MS)
-                // Empty-queue transitions are checkpointed by the timeline listener;
-                // don't rewrite an unchanged empty snapshot every two seconds.
-                if (queueSnapshot.isNotEmpty()) persistCheckpoint()
+                // Position only advances while playing. Queue, pause, seek, repeat,
+                // and shuffle changes are checkpointed by their Player.Listener events.
+                if (queueSnapshot.isNotEmpty() && session?.player?.isPlaying == true) {
+                    persistCheckpoint()
+                }
             }
         }
     }

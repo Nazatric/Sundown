@@ -68,6 +68,66 @@ class MediaStoreGenerationTest {
     }
 
     @Test
+    fun preQAggregateExternalCollectionNeverAuthorizesMediaStoreDeletion() {
+        assertEquals(
+            emptyList<String>(),
+            removedMediaStoreIds(setOf("ms:7"), emptySet(), setOf("external")),
+        )
+    }
+
+    @Test
+    fun volumeDetachedDuringScanIsNotADeletionCandidate() {
+        val scanned = stillMountedMediaStoreVolumes(
+            scannedVolumes = setOf("external_primary", "ABCD-1234"),
+            mountedAfterScan = setOf("external_primary"),
+        )
+
+        assertEquals(setOf("external_primary"), scanned)
+        assertEquals(
+            listOf("primary row"),
+            retainMediaStoreRowsFromMountedVolumes(
+                rows = listOf("external_primary" to "primary row", "ABCD-1234" to "detached-card row"),
+                stillMountedVolumes = scanned,
+                volumeOf = { it.first },
+            ).map { it.second },
+        )
+        assertEquals(
+            setOf("ms:7"),
+            retainMediaStoreIdsFromMountedVolumes(
+                currentIds = setOf("ms:7", "ms:ABCD-1234:9"),
+                scannedVolumes = setOf("external_primary", "ABCD-1234"),
+                stillMountedVolumes = scanned,
+            ),
+        )
+        assertEquals(
+            listOf("ms:7"),
+            removedMediaStoreIds(
+                previousIds = setOf("ms:7", "ms:ABCD-1234:9"),
+                currentIds = emptySet(),
+                scannedVolumes = scanned,
+            ),
+        )
+    }
+
+    @Test
+    fun detachedPrimaryVolumeDropsItsBareNumericIdsFromTheSnapshot() {
+        val scannedVolumes = setOf("external_primary", "ABCD-1234")
+        val stillMounted = stillMountedMediaStoreVolumes(
+            scannedVolumes = scannedVolumes,
+            mountedAfterScan = setOf("ABCD-1234"),
+        )
+
+        assertEquals(
+            setOf("ms:ABCD-1234:9"),
+            retainMediaStoreIdsFromMountedVolumes(
+                currentIds = setOf("ms:7", "ms:ABCD-1234:9"),
+                scannedVolumes = scannedVolumes,
+                stillMountedVolumes = stillMounted,
+            ),
+        )
+    }
+
+    @Test
     fun volumeCheckpointsRoundTripInStableOrder() {
         val checkpoints = linkedMapOf(
             "ABCD-1234" to MediaStoreCheckpoint("opaque|version=一", 81L),

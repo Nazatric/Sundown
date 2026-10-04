@@ -26,6 +26,8 @@ import java.io.IOException
 class MediaStoreSource(private val context: Context) {
     data class Found(
         val id: String,
+        /** Source volume is retained until the post-scan mount check completes. */
+        val volume: String,
         val docUri: String,
         val path: String,
         val name: String,
@@ -97,6 +99,9 @@ class MediaStoreSource(private val context: Context) {
 
         volumes.forEach { volume ->
             val version = mediaStoreVersion(volume)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && version == null) {
+                throw IOException("Android could not verify the device music index. Please retry.")
+            }
             val upperGeneration = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 runCatching { MediaStore.getGeneration(context, volume) }.getOrNull()
             } else {
@@ -110,15 +115,31 @@ class MediaStoreSource(private val context: Context) {
             val ids = queryCurrentIds(volume) { count -> onProgress(currentIds.size + count) }
             currentIds += ids
 
-            if (version != null && upperGeneration != null) {
+            if (version != null) {
+                // API 29 has per-volume versions but no generation watermark. Recheck
+                // the version there too; on API 30+ also persist the bounded generation.
                 if (mediaStoreVersion(volume) != version) {
                     throw IOException("The MediaStore index changed during scanning. Please retry.")
                 }
-                checkpoints[volume] = MediaStoreCheckpoint(version, upperGeneration)
+                if (upperGeneration != null) {
+                    checkpoints[volume] = MediaStoreCheckpoint(version, upperGeneration)
+                }
             }
         }
         onProgress(currentIds.size)
-        ScanSnapshot(changed, currentIds, volumes.toSet(), checkpoints)
+        // A removable volume can disappear after enumeration begins. Re-list
+        // mounted volumes before authorizing deletion or advancing its checkpoint.
+        val scannedVolumes = volumes.toSet()
+        val mountedAfterScan = externalVolumes().toSet()
+        val stillMounted = stillMountedMediaStoreVolumes(scannedVolumes, mountedAfterScan)
+        ScanSnapshot(
+            // Rows read just before a card detach must not resurrect cached tracks
+            // for a volume that was no longer mounted when the snapshot completed.
+            changedTracks = retainMediaStoreRowsFromMountedVolumes(changed, stillMounted, Found::volume),
+            currentIds = retainMediaStoreIdsFromMountedVolumes(currentIds, scannedVolumes, stillMounted),
+            scannedVolumes = stillMounted,
+            checkpoints = checkpoints.filterKeys { it in stillMounted },
+        )
     }
 
     private fun externalVolumes(): List<String> {
@@ -203,6 +224,7 @@ class MediaStoreSource(private val context: Context) {
                 val modified = if (modifiedColumn >= 0 && !rows.isNull(modifiedColumn)) rows.getLong(modifiedColumn) * 1_000L else 0L
                 out += Found(
                     id = itemId(volume, mediaId),
+                    volume = volume,
                     docUri = uri.toString(),
                     path = path,
                     name = name,

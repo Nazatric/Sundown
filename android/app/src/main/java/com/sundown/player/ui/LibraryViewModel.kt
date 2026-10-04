@@ -412,15 +412,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch { restorePlayback() }
         }
 
-        // The service owns playback when the UI is backgrounded. While the app
-        // is visible, persist a checkpoint so process death resumes near the
-        // last position rather than at the beginning of a track.
-        viewModelScope.launch {
-            player.progress.sample(2_000).collect { progress ->
-                val snapshot = player.state.value
-                if (snapshot.hasSource) persistSnapshot(snapshot, progress)
-            }
-        }
     }
 
     private suspend fun restorePlayback() {
@@ -630,16 +621,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         persistSnapshot(player.state.value)
     }
 
-    private suspend fun persistSnapshot(
-        snapshot: PlayerSnapshot,
-        progress: PlaybackProgress = player.progress.value,
-    ) {
+    private suspend fun persistSnapshot(snapshot: PlayerSnapshot) {
         val queueIds = player.queueIds()
+        val position = player.progress.value.elapsedMs.coerceAtLeast(0L)
         prefsStore.update { current ->
             current.copy(
                 queue = queueIds,
                 currentId = snapshot.trackId,
-                position = progress.elapsedMs.coerceAtLeast(0L),
+                position = position,
                 volume = if (snapshot.muted) current.volume else snapshot.volume,
                 muted = snapshot.muted,
                 shuffle = snapshot.shuffle,

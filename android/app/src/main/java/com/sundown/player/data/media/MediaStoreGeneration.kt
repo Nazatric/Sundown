@@ -21,15 +21,50 @@ internal fun mediaStoreGenerationRange(
     return MediaStoreGenerationRange(after, through)
 }
 
+/** IDs for a detached volume are not deletion candidates until that volume is scanned again. */
+internal fun stillMountedMediaStoreVolumes(
+    scannedVolumes: Set<String>,
+    mountedAfterScan: Set<String>,
+): Set<String> = scannedVolumes intersect mountedAfterScan
+
+internal fun <T> retainMediaStoreRowsFromMountedVolumes(
+    rows: List<T>,
+    stillMountedVolumes: Set<String>,
+    volumeOf: (T) -> String,
+): List<T> = rows.filter { volumeOf(it) in stillMountedVolumes }
+
+/** Drop IDs from volumes that disappeared while the MediaStore snapshot was being read. */
+internal fun retainMediaStoreIdsFromMountedVolumes(
+    currentIds: Set<String>,
+    scannedVolumes: Set<String>,
+    stillMountedVolumes: Set<String>,
+): Set<String> {
+    val detached = scannedVolumes - stillMountedVolumes
+    if (detached.isEmpty()) return currentIds
+    return currentIds.filterTo(LinkedHashSet()) { id ->
+        if (!id.startsWith("ms:")) return@filterTo true
+        val key = id.removePrefix("ms:")
+        if (key.toLongOrNull() != null) {
+            // A bare numeric ID is used by the pre-Q aggregate and by Q+'s primary volume.
+            "external" !in detached && "external_primary" !in detached
+        } else {
+            val separator = key.lastIndexOf(':')
+            separator <= 0 || key.substring(0, separator) !in detached
+        }
+    }
+}
+
 /**
- * MediaStore IDs without a volume component belong to the legacy/external-primary
- * collection. Keep IDs for absent removable volumes until those volumes are scanned again.
+ * Legacy IDs without a volume component are ambiguous on pre-Q's aggregate
+ * `external` collection. Only Q+'s explicit `external_primary` volume is safe
+ * deletion authority for those IDs; an absent removable volume must not erase
+ * its cached rows.
  */
 internal fun mediaStoreIdWasInScannedVolumes(id: String, scannedVolumes: Set<String>): Boolean {
     if (!id.startsWith("ms:")) return false
     val key = id.removePrefix("ms:")
     if (key.toLongOrNull() != null) {
-        return "external" in scannedVolumes || "external_primary" in scannedVolumes
+        return "external_primary" in scannedVolumes
     }
     val separator = key.lastIndexOf(':')
     if (separator <= 0 || key.substring(separator + 1).toLongOrNull() == null) return false

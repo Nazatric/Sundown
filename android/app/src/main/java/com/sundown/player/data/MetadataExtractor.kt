@@ -64,7 +64,9 @@ class MetadataExtractor(private val context: Context) {
                     ?: retriever.num(MediaMetadataRetriever.METADATA_KEY_DATE).takeIf { it in 1000..3000 } ?: 0,
                 durationSec = (retriever.numLong(MediaMetadataRetriever.METADATA_KEY_DURATION) / 1_000L)
                     .coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                picture = runCatching { retriever.embeddedPicture?.takeIf { it.isNotEmpty() && it.size <= MAX_EMBEDDED_ART_BYTES } }.getOrNull(),
+                // embeddedPicture eagerly materializes the entire blob before a size check can run.
+                // Artwork is extracted by Rust from the bounded head/tail slices below instead.
+                picture = null,
             )
         } catch (_: Exception) {
             null
@@ -121,6 +123,5 @@ class MetadataExtractor(private val context: Context) {
     private companion object {
         const val HEAD = 1 shl 21
         const val TAIL = 1 shl 18
-        const val MAX_EMBEDDED_ART_BYTES = 20 * 1024 * 1024
     }
 }

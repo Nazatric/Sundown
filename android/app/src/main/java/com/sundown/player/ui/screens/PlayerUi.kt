@@ -4,8 +4,10 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -127,6 +129,7 @@ fun MiniPlayer(
     onNext: () -> Unit,
     onScrub: (Float) -> Unit,
     onVolume: (Float) -> Unit,
+    onVolumeCommit: () -> Unit = {},
     onMute: () -> Unit,
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
@@ -214,7 +217,7 @@ fun MiniPlayer(
             if (wide) {
                 VolumePill(
                     snapshot.volume, snapshot.muted, Modifier.width(200.dp),
-                    onLevel = onVolume, onToggleMute = onMute,
+                    onLevel = onVolume, onLevelCommit = onVolumeCommit, onToggleMute = onMute,
                 )
             }
         }
@@ -252,6 +255,7 @@ fun NowPlayingContent(
     onNext: () -> Unit,
     onScrub: (Float) -> Unit,
     onVolume: (Float) -> Unit,
+    onVolumeCommit: () -> Unit = {},
     onMute: () -> Unit,
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
@@ -293,6 +297,7 @@ fun NowPlayingContent(
     Column(
         modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
             .padding(top = 6.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -361,7 +366,7 @@ fun NowPlayingContent(
             ModePill(snapshot.repeat, snapshot.shuffle, onRepeat = onRepeat, onShuffle = onShuffle)
             VolumePill(
                 snapshot.volume, snapshot.muted, Modifier.weight(1f).widthIn(max = 240.dp),
-                onLevel = onVolume, onToggleMute = onMute,
+                onLevel = onVolume, onLevelCommit = onVolumeCommit, onToggleMute = onMute,
             )
         }
 

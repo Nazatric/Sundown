@@ -152,11 +152,14 @@ fun VolumePill(
     muted: Boolean,
     modifier: Modifier = Modifier,
     onLevel: (Float) -> Unit,
+    onLevelCommit: () -> Unit = {},
     onToggleMute: () -> Unit,
 ) {
     var widthPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
     val value = (if (muted) 0f else level).coerceIn(0f, 1f)
+    val latestOnLevel by rememberUpdatedState(onLevel)
+    val latestOnLevelCommit by rememberUpdatedState(onLevelCommit)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -175,13 +178,29 @@ fun VolumePill(
                 .onSizeChanged { widthPx = it.width }
                 .pointerInput(widthPx) {
                     if (widthPx == 0) return@pointerInput
-                    detectTapGestures { offset -> onLevel((offset.x / widthPx).coerceIn(0f, 1f)) }
+                    detectTapGestures { offset ->
+                        latestOnLevel((offset.x / widthPx).coerceIn(0f, 1f))
+                        latestOnLevelCommit()
+                    }
                 }
                 .pointerInput(widthPx) {
                     if (widthPx == 0) return@pointerInput
-                    detectHorizontalDragGestures { change, _ ->
-                        onLevel((change.position.x / widthPx).coerceIn(0f, 1f))
-                    }
+                    var dragChanged = false
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragChanged = false },
+                        onDragEnd = {
+                            if (dragChanged) latestOnLevelCommit()
+                            dragChanged = false
+                        },
+                        onDragCancel = {
+                            if (dragChanged) latestOnLevelCommit()
+                            dragChanged = false
+                        },
+                        onHorizontalDrag = { change, _ ->
+                            dragChanged = true
+                            latestOnLevel((change.position.x / widthPx).coerceIn(0f, 1f))
+                        },
+                    )
                 },
             contentAlignment = Alignment.CenterStart,
         ) {
