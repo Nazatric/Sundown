@@ -199,41 +199,16 @@ fun AlbumStack(
         ) {
             ArtworkImage(artId, small, Modifier.fillMaxSize())
             
-            // PIXEL-PERFECT CURVED SPECUAR GLOSS
+            // Replaced Canvas paths with high-performance GPU Gloss Shader for all GPUs
+            Box(Modifier.matchParentSize().gpuGloss(0.32f))
+            
+            // Specular top edge retaining sharp contrast
             Canvas(Modifier.matchParentSize()) {
-                val glossPath = Path().apply {
-                    moveTo(0f, 0f)
-                    lineTo(size.width, 0f)
-                    lineTo(size.width, size.height * 0.45f)
-                    quadraticTo(
-                        size.width * 0.5f, size.height * 0.58f,
-                        0f, size.height * 0.45f
-                    )
-                    close()
-                }
-                
-                drawPath(
-                    path = glossPath,
-                    brush = Brush.verticalGradient(
-                        0.00f to Color.White.copy(alpha = 0.32f),
-                        0.40f to Color.White.copy(alpha = 0.12f),
-                        1.00f to Color.White.copy(alpha = 0.02f),
-                    )
-                )
-                
                 drawLine(
                     color = Color.White.copy(alpha = 0.45f),
                     start = Offset(0f, 0.75f),
                     end = Offset(size.width, 0.75f),
                     strokeWidth = 1.5f
-                )
-                
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        0.00f to Color.Transparent,
-                        0.85f to Color.Transparent,
-                        1.00f to Color.Black.copy(alpha = 0.10f),
-                    )
                 )
             }
             

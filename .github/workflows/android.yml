@@ -55,28 +55,52 @@ jobs:
         working-directory: android
         run: gradle :app:assembleDebug
 
-      - name: Check Release Secrets
-        id: release_check
+      - name: Provision Release Key (Signed at all costs)
+        id: release_key
         run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ] && [ -n "${{ secrets.KEYSTORE_PASSWORD }}" ]; then
-            echo "configured=true" >> $GITHUB_OUTPUT
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Using existing repository secrets."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
+            echo "pass=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_OUTPUT
+            echo "alias=${{ secrets.KEY_ALIAS }}" >> $GITHUB_OUTPUT
+            echo "key_pass=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_OUTPUT
           else
-            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "Secrets missing. Generating a project-stable release key..."
+            # Use REPOSITORY_ID as a stable seed for the password
+            STABLE_PW="pw${{ github.repository_id }}stable"
+            ALIAS="sundown-v1"
+            # Generate key using keytool (available in CI images)
+            keytool -genkeypair -v -keystore android/app/release.keystore -alias "$ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$STABLE_PW" -keypass "$STABLE_PW" \
+              -dname "CN=Sundown Release, OU=V1, O=Nazatric, L=Remote, ST=Cloud, C=US"
+            echo "pass=$STABLE_PW" >> $GITHUB_OUTPUT
+            echo "alias=$ALIAS" >> $GITHUB_OUTPUT
+            echo "key_pass=$STABLE_PW" >> $GITHUB_OUTPUT
+            echo "::warning::Signed with auto-generated key. Download 'release-keystore' artifact to save it."
           fi
 
-      - name: Decode Keystore
-        if: steps.release_check.outputs.configured == 'true'
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
-
-      - name: Assemble Signed Release APK
-        if: steps.release_check.outputs.configured == 'true'
+      - name: Assemble SIGNED Universal Release APK
         working-directory: android
         env:
           SUNDOWN_STORE_FILE: release.keystore
-          SUNDOWN_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          SUNDOWN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          SUNDOWN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          SUNDOWN_STORE_PASSWORD: ${{ steps.release_key.outputs.pass }}
+          SUNDOWN_KEY_ALIAS: ${{ steps.release_key.outputs.alias }}
+          SUNDOWN_KEY_PASSWORD: ${{ steps.release_key.outputs.key_pass }}
         run: gradle :app:assembleRelease
+
+      - name: Verify APK Signature (apksigner)
+        run: |
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          $ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose --print-certs "$APK"
+          echo "Signature verified successfully."
+
+      - name: Archive Release Keystore
+        if: ${{ secrets.KEYSTORE_BASE64 == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-keystore
+          path: android/app/release.keystore
 
       - name: Verify Universal APK
         run: |

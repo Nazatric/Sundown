@@ -22,31 +22,46 @@ class MetadataExtractor(private val context: Context) {
         val picture: ByteArray?,
     )
 
+    /**
+     * Rebuilt High-Performance Metadata Reader.
+     * Uses Lofty (Rust) for deep parsing and Android for duration/platform fallback.
+     */
     suspend fun read(uri: Uri, fallbackTitle: String): Result = withContext(Dispatchers.IO) {
-        val platform = readPlatform(uri, fallbackTitle)
-        val needsRust = !SundownCore.available || platform == null ||
-            platform.artist.isBlank() || platform.album.isBlank() ||
-            platform.albumArtist.isBlank() || platform.genre.isBlank() ||
-            platform.trackNo == 0 || platform.discNo == 0 || platform.picture == null
-        if (!needsRust || !SundownCore.available) return@withContext platform ?: empty(fallbackTitle)
-
-        val (head, tail) = readEnds(uri)
-        if (head.isEmpty()) return@withContext platform ?: empty(fallbackTitle)
-        val parsed = SundownCore.parseTags(head, tail, fallbackTitle)
-        val tags = parsed.tags
+        // Platform fallback for duration (MediaMetadataRetriever is fastest for duration)
+        val duration = readPlatformDuration(uri)
+        
+        // Full deep parse using new Lofty-powered Rust core
+        val bytes = readFullFile(uri) ?: return@withContext empty(fallbackTitle)
+        val result = com.sundown.player.nativecore.SundownCore.parseMetadata(bytes, fallbackTitle)
+        
+        if (result == null) return@withContext empty(fallbackTitle)
+        
+        val tags = result.metadata
         Result(
-            title = platform?.title?.takeIf { it.isNotBlank() } ?: tags.title.ifBlank { fallbackTitle },
-            artist = platform?.artist?.ifBlank { tags.artist } ?: tags.artist,
-            album = platform?.album?.ifBlank { tags.album } ?: tags.album,
-            albumArtist = platform?.albumArtist?.ifBlank { tags.albumArtist } ?: tags.albumArtist,
-            genre = platform?.genre?.ifBlank { tags.genre } ?: tags.genre,
-            trackNo = platform?.trackNo?.takeIf { it > 0 } ?: tags.trackNo,
-            discNo = platform?.discNo?.takeIf { it > 0 } ?: tags.discNo,
-            year = platform?.year?.takeIf { it > 0 } ?: tags.year,
-            durationSec = platform?.durationSec ?: 0,
-            picture = platform?.picture ?: parsed.picture,
+            title = tags.title,
+            artist = tags.artist,
+            album = tags.album,
+            albumArtist = tags.albumArtist,
+            genre = tags.genre,
+            trackNo = tags.trackNo,
+            discNo = tags.discNo,
+            year = tags.year,
+            durationSec = duration ?: (tags.durationMs / 1000),
+            picture = result.picture
         )
     }
+
+    private fun readPlatformDuration(uri: Uri): Int? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000L
+        } catch (_: Exception) { null } finally { retriever.release() }
+    }.toInt()
+
+    private fun readFullFile(uri: Uri): ByteArray? = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+    }.getOrNull()
 
     private fun readPlatform(uri: Uri, fallbackTitle: String): Result? {
         val retriever = MediaMetadataRetriever()
