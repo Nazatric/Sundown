@@ -26,26 +26,19 @@ import com.sundown.player.ui.theme.groundShadow
 
 /** Supplies decoded high-resolution grid and compact row previews from the Rust core. */
 interface ArtworkLoader {
-    /** Non-blocking memory-cache lookup so prefetched covers can render on the first frame. */
-    fun cached(artId: String, small: Boolean): ImageBitmap? = null
-
+    fun cached(artId: String, small: Boolean): ImageBitmap?
     suspend fun load(artId: String, small: Boolean): ImageBitmap?
 }
 
 val LocalArtworkLoader = staticCompositionLocalOf<ArtworkLoader?> { null }
 
-/**
- * The "no embedded art" sleeve, drawn natively instead of shipping an asset so
- * it stays crisp at any density. Geometry copies sleeve-placeholder.svg.
- */
 @Composable
 fun SleevePlaceholder(modifier: Modifier = Modifier) {
     Canvas(modifier) {
         drawRect(
             Brush.linearGradient(
                 listOf(Color(0xFF89949D), Color(0xFF3E4A54)),
-                start = Offset.Zero,
-                end = Offset(size.width, size.height),
+                start = Offset.Zero, end = Offset(size.width, size.height),
             ),
         )
         val c = Offset(size.width / 2f, size.height / 2f)
@@ -76,39 +69,41 @@ fun ArtworkImage(
 ) {
     val loader = LocalArtworkLoader.current
     val initialBitmap = remember(artId, small, loader) {
-        artId?.let { loader?.cached(it, small) }
+        if (artId != null) loader?.cached(artId, small) else null
     }
     var bitmap by remember(artId, small, loader) { mutableStateOf(initialBitmap) }
     val imageAlpha = remember(artId, small, loader) { Animatable(if (initialBitmap != null) 1f else 0f) }
 
     LaunchedEffect(artId, small, loader) {
-        bitmap = if (artId != null && loader != null) {
-            loader.cached(artId, small) ?: loader.load(artId, small)
-        } else {
-            null
+        if (artId == null) {
+            bitmap = null
+            imageAlpha.snapTo(0f)
+            return@LaunchedEffect
         }
-    }
-    LaunchedEffect(bitmap, initialBitmap) {
-        if (bitmap != null && initialBitmap == null) {
-            // Short fade-in keeps artwork feeling immediate while avoiding a
-            // harsh pop. 80ms is fast enough to feel stable during scrolling.
-            imageAlpha.animateTo(1f, tween(durationMillis = 80))
+        val memory = loader?.cached(artId, small)
+        if (memory != null) {
+            bitmap = memory
+            imageAlpha.snapTo(1f)
+        } else {
+            val loaded = loader?.load(artId, small)
+            bitmap = loaded
+            if (loaded != null) {
+                imageAlpha.animateTo(1f, tween(60))
+            }
         }
     }
 
-    val image = bitmap
-    val fade = imageAlpha.value
     Box(modifier) {
-        if (image == null || fade < 1f) {
+        val current = bitmap
+        val fade = imageAlpha.value
+        if (current == null || fade < 1f) {
             SleevePlaceholder(Modifier.matchParentSize())
         }
-        if (image != null) {
+        if (current != null) {
             Image(
-                bitmap = image,
+                bitmap = current,
                 contentDescription = null,
                 modifier = Modifier.matchParentSize().graphicsLayer { this.alpha = fade },
-                // Square crop keeps every cover the same visual proportion even
-                // when the embedded art is 3:2 or 1500x1000.
                 contentScale = ContentScale.Crop,
                 colorFilter = colorFilter,
                 alpha = alpha,
@@ -148,7 +143,6 @@ private fun Sleeve(
                 rotationZ = rotation
                 translationX = dx.toPx()
                 translationY = dy.toPx()
-                // CSS: transform-origin: 50% 55%
                 transformOrigin = TransformOrigin(0.5f, 0.55f)
             }
             .cssShadow(Color(0x9E0E1419), blur = 3.dp, offsetY = 1.dp, cornerRadius = D.sleeveRadius)
@@ -159,16 +153,6 @@ private fun Sleeve(
     )
 }
 
-/**
- * The five-layer album stack. This is the app's signature element, so the
- * rotations, offsets and per-layer tone adjustments are copied exactly:
- *
- *   paper  +4.0deg  ( 1,-3)  paper gradient, no art
- *   rear   -4.0deg  (-1,-2)  alpha .65  saturate .45  brightness 1.2
- *   left   -3.7deg  (-3, 3)  brightness .79  saturate .60
- *   right  +3.0deg  ( 3, 3)  brightness .90  saturate .75
- *   front   0       ( 0, 0)  full art + hairline inner highlight
- */
 @Composable
 fun AlbumStack(
     artId: String?,
@@ -180,6 +164,7 @@ fun AlbumStack(
     val rearTone = remember { toneFilter(1.2f, 0.45f) }
     val leftTone = remember { toneFilter(0.79f, 0.6f) }
     val rightTone = remember { toneFilter(0.9f, 0.75f) }
+    
     Box(modifier.size(size)) {
         Spacer(
             Modifier.matchParentSize().groundShadow(
@@ -190,71 +175,77 @@ fun AlbumStack(
                 color = Color(0x6E0C151D),
             ),
         )
-        Sleeve(4f, 1.dp, (-3).dp, borderColor = P.PaperEdge) {
+        
+        Sleeve(4f, 1.dp, (-3.5).dp, borderColor = P.PaperEdge) {
             Box(Modifier.fillMaxSize().background(G.paper))
         }
-        Sleeve(-4f, (-1).dp, (-2).dp) {
-            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), rearTone, alpha = 0.65f)
+        Sleeve(-4.2f, (-1.2).dp, (-2.5).dp) {
+            ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), rearTone, alpha = 0.68f)
         }
-        Sleeve(-3.7f, (-3).dp, 3.dp) {
+        Sleeve(-3.8f, (-3.5).dp, 3.5.dp) {
             ArtworkImage(rearArtId ?: artId, small, Modifier.fillMaxSize(), leftTone)
         }
-        Sleeve(3f, 3.dp, 3.dp) {
+        Sleeve(3.2f, 3.5.dp, 3.5.dp) {
             ArtworkImage(artId, small, Modifier.fillMaxSize(), rightTone)
         }
+        
         Box(
             Modifier
                 .fillMaxSize()
-                .cssShadow(Color(0xB80A1219), blur = 4.dp, offsetY = 2.dp, cornerRadius = D.sleeveRadius)
+                .cssShadow(Color(0xB80A1219), blur = 5.dp, offsetY = 2.5.dp, cornerRadius = D.sleeveRadius)
                 .clip(RoundedCornerShape(D.sleeveRadius))
                 .background(P.SleeveFill)
                 .border(1.dp, P.SleeveEdge, RoundedCornerShape(D.sleeveRadius)),
         ) {
             ArtworkImage(artId, small, Modifier.fillMaxSize())
-            // Glossy front-sleeve finish: a curved specular highlight concentrated
-            // at the top of the card, simulating overhead light hitting a glossy
-            // surface. Matches the reference's "glass over artwork" appearance.
+            
+            // PIXEL-PERFECT CURVED SPECUAR GLOSS
             Canvas(Modifier.matchParentSize()) {
-                // Primary top-concentrated gloss: vertical gradient fading out
-                // at ~45% height, stronger than the original diagonal approach.
-                drawRect(
+                val glossPath = Path().apply {
+                    moveTo(0f, 0f)
+                    lineTo(size.width, 0f)
+                    lineTo(size.width, size.height * 0.45f)
+                    quadraticTo(
+                        size.width * 0.5f, size.height * 0.58f,
+                        0f, size.height * 0.45f
+                    )
+                    close()
+                }
+                
+                drawPath(
+                    path = glossPath,
                     brush = Brush.verticalGradient(
-                        0.00f to Color.White.copy(alpha = 0.22f),
-                        0.08f to Color.White.copy(alpha = 0.18f),
-                        0.22f to Color.White.copy(alpha = 0.08f),
-                        0.38f to Color.White.copy(alpha = 0.02f),
-                        0.50f to Color.Transparent,
-                        1.00f to Color.Transparent,
-                    ),
+                        0.00f to Color.White.copy(alpha = 0.32f),
+                        0.40f to Color.White.copy(alpha = 0.12f),
+                        1.00f to Color.White.copy(alpha = 0.02f),
+                    )
                 )
-                // Specular top-edge highlight: a 1.5px bright line at the very
-                // top simulating the edge catching direct light.
+                
                 drawLine(
-                    color = Color.White.copy(alpha = 0.30f),
-                    start = Offset(0f, 0.5f),
-                    end = Offset(this.size.width, 0.5f),
-                    strokeWidth = 1.5f,
+                    color = Color.White.copy(alpha = 0.45f),
+                    start = Offset(0f, 0.75f),
+                    end = Offset(size.width, 0.75f),
+                    strokeWidth = 1.5f
                 )
-                // Subtle bottom darkening for depth/curvature illusion.
+                
                 drawRect(
                     brush = Brush.verticalGradient(
                         0.00f to Color.Transparent,
                         0.85f to Color.Transparent,
-                        1.00f to Color.Black.copy(alpha = 0.06f),
-                    ),
+                        1.00f to Color.Black.copy(alpha = 0.10f),
+                    )
                 )
             }
-            // .sleeve--front::after — 1px warm hairline inside the edge.
+            
             Box(
                 Modifier
                     .matchParentSize()
-                    .border(1.dp, Color(0x5CF8F8F3), RoundedCornerShape(D.sleeveRadius)),
+                    .border(1.dp, Color(0x6BF8F8F3), RoundedCornerShape(D.sleeveRadius)),
             )
         }
     }
 }
 
-/** Dashed-free "New Playlist" tile: same stack silhouette, glyph instead of art. */
 @Composable
 fun NewStack(size: Dp, icon: com.sundown.player.ui.icons.SIcon, modifier: Modifier = Modifier) {
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
