@@ -38,6 +38,10 @@ android {
                     storePassword = System.getenv("SUNDOWN_STORE_PASSWORD")
                     keyAlias = System.getenv("SUNDOWN_KEY_ALIAS")
                     keyPassword = System.getenv("SUNDOWN_KEY_PASSWORD")
+                    val storeTypeEnv = System.getenv("SUNDOWN_STORE_TYPE")
+                    if (!storeTypeEnv.isNullOrBlank()) {
+                        storeType = storeTypeEnv
+                    }
                 }
             }
         }

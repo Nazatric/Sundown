@@ -1,14 +1,16 @@
-name: Android Rebuild CI
+name: Android CI
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: android-${{ github.ref }}
@@ -16,10 +18,12 @@ concurrency:
 
 jobs:
   build:
-    name: Native Rebuild Build & Release
+    name: Rust tests, Android builds and signed release APK
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
       ANDROID_NDK_VERSION: 26.3.11579264
 
     steps:
@@ -35,86 +39,190 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install NDK
-        run: sdkmanager "ndk;${ANDROID_NDK_VERSION}"
+      - name: Install Android SDK and NDK packages
+        shell: bash
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Set up Rust
+      - name: Set up Rust and Android targets
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android/rust/sundown-core -> target
+
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        run: cargo install cargo-ndk --locked || cargo install cargo-ndk
 
-      - name: Build Rust Core
+      - name: Run Rust unit tests
+        shell: bash
         run: |
-          cd android/rust/sundown-core
-          cargo ndk -t aarch64-linux-android -t armv7-linux-androideabi -t x86_64-linux-android -o ../../app/src/main/jniLibs build --release
-
-      - name: Assemble Debug APK
-        working-directory: android
-        run: gradle :app:assembleDebug
-
-      - name: Provision Release Key (Signed at all costs)
-        id: release_key
-        run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "Using existing repository secrets."
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
-            echo "pass=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_OUTPUT
-            echo "alias=${{ secrets.KEY_ALIAS }}" >> $GITHUB_OUTPUT
-            echo "key_pass=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_OUTPUT
-          else
-            echo "Secrets missing. Generating a project-stable release key..."
-            # Use REPOSITORY_ID as a stable seed for the password
-            STABLE_PW="pw${{ github.repository_id }}stable"
-            ALIAS="sundown-v1"
-            # Generate key using keytool (available in CI images)
-            keytool -genkeypair -v -keystore android/app/release.keystore -alias "$ALIAS" \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass "$STABLE_PW" -keypass "$STABLE_PW" \
-              -dname "CN=Sundown Release, OU=V1, O=Nazatric, L=Remote, ST=Cloud, C=US"
-            echo "pass=$STABLE_PW" >> $GITHUB_OUTPUT
-            echo "alias=$ALIAS" >> $GITHUB_OUTPUT
-            echo "key_pass=$STABLE_PW" >> $GITHUB_OUTPUT
-            echo "::warning::Signed with auto-generated key. Download 'release-keystore' artifact to save it."
+          set +e
+          cargo test --manifest-path android/rust/sundown-core/Cargo.toml 2>&1 | tee /tmp/sundown-rust-tests.log
+          test_exit=${PIPESTATUS[0]}
+          if [[ "$test_exit" -ne 0 ]]; then
+            summary="$(tail -n 20 /tmp/sundown-rust-tests.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Rust unit tests failed::$summary"
+            exit "$test_exit"
           fi
 
-      - name: Assemble SIGNED Universal Release APK
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.9'
+
+      - name: Run Android unit tests
+        working-directory: android
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest 2>&1 | tee /tmp/sundown-android-tests.log
+          test_exit=${PIPESTATUS[0]}
+          if [[ "$test_exit" -ne 0 ]]; then
+            details="$(grep -Ei '(^e: |error:|what went wrong|execution failed for task|caused by:|unresolved reference|could not resolve|failed to transform)' /tmp/sundown-android-tests.log | tail -n 16)"
+            if [[ -z "$details" ]]; then details="$(tail -n 30 /tmp/sundown-android-tests.log)"; fi
+            summary="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Android unit tests failed::$summary"
+            exit "$test_exit"
+          fi
+
+      - name: Run Android lint
+        working-directory: android
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:lintDebug 2>&1 | tee /tmp/sundown-android-lint.log
+          lint_exit=${PIPESTATUS[0]}
+          if [[ "$lint_exit" -ne 0 ]]; then
+            details="$(grep -Ei '(^e: |error:|what went wrong|execution failed for task|caused by:|unresolved reference|failed to transform)' /tmp/sundown-android-lint.log | tail -n 16)"
+            if [[ -z "$details" ]]; then details="$(tail -n 30 /tmp/sundown-android-lint.log)"; fi
+            summary="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Android lint failed::$summary"
+            exit "$lint_exit"
+          fi
+
+      - name: Assemble debug APK
+        working-directory: android
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/sundown-debug-build.log
+          build_exit=${PIPESTATUS[0]}
+          if [[ "$build_exit" -ne 0 ]]; then
+            summary="$(tail -n 20 /tmp/sundown-debug-build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Debug APK assembly failed::$summary"
+            exit "$build_exit"
+          fi
+
+      - name: Validate release signing configuration
+        id: release_signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          missing=()
+          [[ -n "$KEYSTORE_B64" ]] || missing+=(KEYSTORE_BASE64)
+          [[ -n "$STORE_PASSWORD" ]] || missing+=(KEYSTORE_PASSWORD)
+          [[ -n "$KEY_ALIAS" ]] || missing+=(KEY_ALIAS)
+          [[ -n "$KEY_PASSWORD" ]] || missing+=(KEY_PASSWORD)
+          if [[ ${#missing[@]} -ne 0 ]]; then
+            echo "::error title=Release signing unavailable::Missing required GitHub Actions secret(s): ${missing[*]}"
+            echo "Missing required release-signing secret(s): ${missing[*]}." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "Release signing inputs are configured." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 --decode > android/app/release.keystore
+
+      - name: Assemble signed universal release APK
         working-directory: android
         env:
           SUNDOWN_STORE_FILE: release.keystore
-          SUNDOWN_STORE_PASSWORD: ${{ steps.release_key.outputs.pass }}
-          SUNDOWN_KEY_ALIAS: ${{ steps.release_key.outputs.alias }}
-          SUNDOWN_KEY_PASSWORD: ${{ steps.release_key.outputs.key_pass }}
-        run: gradle :app:assembleRelease
-
-      - name: Verify APK Signature (apksigner)
+          SUNDOWN_STORE_TYPE: PKCS12
+          SUNDOWN_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SUNDOWN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SUNDOWN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          APK="android/app/build/outputs/apk/release/app-release.apk"
-          $ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose --print-certs "$APK"
-          echo "Signature verified successfully."
-
-      - name: Archive Release Keystore
-        if: ${{ secrets.KEYSTORE_BASE64 == '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-keystore
-          path: android/app/release.keystore
-
-      - name: Verify Universal APK
-        run: |
-          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
-            APK="android/app/build/outputs/apk/release/app-release.apk"
-          else
-            APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          set +e
+          gradle --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee /tmp/sundown-release-build.log
+          build_exit=${PIPESTATUS[0]}
+          if [[ "$build_exit" -ne 0 ]]; then
+            summary="$(tail -n 24 /tmp/sundown-release-build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Release APK assembly failed::$summary"
+            exit "$build_exit"
           fi
-          unzip -l $APK | grep "libsundown_core.so"
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Verify signed universal release APK
+        shell: bash
+        run: |
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk" || { echo "::error::Expected signed release APK is missing: $apk"; exit 1; }
+          python3 - "$apk" <<'PYAPK'
+          import sys, zipfile
+          apk = sys.argv[1]
+          required = [
+              "lib/arm64-v8a/libsundown_core.so",
+              "lib/armeabi-v7a/libsundown_core.so",
+              "lib/x86_64/libsundown_core.so",
+          ]
+          with zipfile.ZipFile(apk) as archive:
+              names = set(archive.namelist())
+          missing = [name for name in required if name not in names]
+          if missing:
+              raise SystemExit("Universal APK is missing native ABI libraries: " + ", ".join(missing))
+          print("Universal APK contains arm64-v8a, armeabi-v7a and x86_64 Rust libraries.")
+          PYAPK
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$apk"
+          unzip -l "$apk" | grep 'META-INF/.*\(RSA\|DSA\|EC\|SF\)$'
+          echo "Signed universal release APK signature verification passed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v7
         with:
-          name: Sundown-Universal-APK
+          name: sundown-debug-apk-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload signed universal release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: sundown-release-universal-apk-${{ github.sha }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove release keystore
+        if: always()
+        run: rm -f android/app/release.keystore
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-build-reports-${{ github.sha }}
           path: |
-            android/app/build/outputs/apk/release/*.apk
-            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/reports/**
+            android/rust/sundown-core/target/**/build/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7

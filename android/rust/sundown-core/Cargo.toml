@@ -1,19 +1,36 @@
 [package]
 name = "sundown-core"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+publish = false
+description = "Tag parsing, artwork processing and library indexing for Sundown Music."
 
 [lib]
-crate-type = ["staticlib", "cdylib"]
+name = "sundown_core"
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["bindgen-cli"]
+
+[features]
+bindgen-cli = ["uniffi/cli"]
 
 [dependencies]
-uniffi = { version = "0.28", features = ["tokio"] }
-lofty = "0.21" # Rebuilt with Lofty for 10x format support
-blake3 = "1.5"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-zstd = "0.13" # Index compression
-rayon = "1.10" # GPU-style parallel processing on CPU
+uniffi = { version = "0.28", features = ["build"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
+base64 = "0.22"
+blake3 = "1.8"
 
 [build-dependencies]
 uniffi = { version = "0.28", features = ["build"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+# UniFFI's library-mode bindgen reads metadata from the ELF symbol table.
+# Strip only debug info so the metadata symbols remain available during APK builds.
+strip = "debuginfo"

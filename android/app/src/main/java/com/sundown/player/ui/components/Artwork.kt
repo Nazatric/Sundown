@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -22,6 +23,7 @@ import com.sundown.player.ui.theme.D
 import com.sundown.player.ui.theme.G
 import com.sundown.player.ui.theme.P
 import com.sundown.player.ui.theme.cssShadow
+import com.sundown.player.ui.theme.gpuGloss
 import com.sundown.player.ui.theme.groundShadow
 
 /** Supplies decoded high-resolution grid and compact row previews from the Rust core. */
