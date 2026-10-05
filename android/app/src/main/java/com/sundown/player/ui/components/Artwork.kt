@@ -209,7 +209,7 @@ fun AlbumStack(
                 drawLine(
                     color = Color.White.copy(alpha = 0.45f),
                     start = Offset(0f, 0.75f),
-                    end = Offset(size.width, 0.75f),
+                    end = Offset(this.size.width, 0.75f),
                     strokeWidth = 1.5f
                 )
             }
